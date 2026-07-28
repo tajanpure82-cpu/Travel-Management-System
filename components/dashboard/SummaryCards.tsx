@@ -3,18 +3,20 @@
 /**
  * SummaryCards
  * ─────────────────────────────────────────────────────────────────────────
- * Dashboard summary — one live card per module, reading real Firestore
- * data via useLiveCollection (10 modules) plus a direct subscription for
- * Settings (a singleton document, not a collection — see that section
- * below for why it can't use the same hook).
+ * Dashboard summary — one live card per module/metric, reading real
+ * Firestore data via useLiveCollection (10 modules) plus a direct
+ * subscription for Settings (a singleton document, not a collection).
  *
- * Two adaptations from the original plan's example card list, both
- * disclosed in the Phase 3 write-up:
- *   - "Remaining Budget" needed a new `totalBudgetCollected` field on
- *     Settings — nothing in the schema held a total-budget figure before.
- *   - "Today's Checklist" became "Checklist Progress" — ChecklistItem has
- *     no due-date concept, so a literal "today" framing doesn't exist in
- *     the real data; this shows completed/total instead.
+ * Four cards added in this pass, per the Analytics request: Total Budget,
+ * Hotel Cost, Food Cost, Trip Progress. Fuel Cost, Toll Cost, and
+ * Remaining Budget already existed from the original build. Driver
+ * Rotation is deliberately not here — it needs a real new data concept
+ * (which driver drives which day), not just a computed card, and wasn't
+ * built alongside this pass.
+ *
+ * Hotel Cost and Food Cost reuse the exact same dual-currency
+ * non-blending discipline as every other total in this app — INR and NPR
+ * are never combined at a guessed rate.
  *
  * Error handling is quieter here than everywhere else in this app,
  * deliberately: every module's own page shows a toast on a Firestore
@@ -25,6 +27,7 @@
  */
 
 import * as React from "react"
+import { differenceInCalendarDays, isValid, parseISO } from "date-fns"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
@@ -42,6 +45,9 @@ import {
   ClipboardList,
   Map as MapIcon,
   Siren,
+  Landmark,
+  UtensilsCrossed,
+  CalendarClock,
   type LucideIcon,
 } from "lucide-react"
 
@@ -94,6 +100,57 @@ function formatNpr(amount: number): string {
  *  risk, not just a display simplification. */
 function formatDualCurrency(inr: number, npr: number): string {
   return npr > 0 ? `${formatInr(inr)} + ${formatNpr(npr)}` : formatInr(inr)
+}
+
+/** Total cost = rooms × rate × nights — only computable once all three
+ *  are set; otherwise there isn't enough information yet. Duplicated
+ *  from HotelTable.tsx's own helper, matching this codebase's convention
+ *  of duplicating small pure functions per file rather than sharing one. */
+function computeHotelTotalCost(booking: HotelBooking): number | null {
+  if (!booking.rooms || !booking.ratePerRoom || !booking.nights) return null
+  return booking.rooms * booking.ratePerRoom * booking.nights
+}
+
+interface TripProgress {
+  label: string
+  helpText: string
+}
+
+/** Computes "Day X of Y" from Settings' start/end dates and today's real
+ *  date. Returns null if either date is missing or invalid — Trip
+ *  Progress simply doesn't render a card in that case, rather than
+ *  showing a misleading "Day 0". */
+function computeTripProgress(startDateIso: string, endDateIso: string): TripProgress | null {
+  if (!startDateIso || !endDateIso) return null
+  const start = parseISO(startDateIso)
+  const end = parseISO(endDateIso)
+  if (!isValid(start) || !isValid(end)) return null
+
+  const today = new Date()
+  const totalDays = differenceInCalendarDays(end, start) + 1
+  const daysSinceStart = differenceInCalendarDays(today, start)
+
+  if (totalDays <= 0) return null
+
+  if (daysSinceStart < 0) {
+    const daysUntil = -daysSinceStart
+    return {
+      label: "Not started",
+      helpText: `Starts in ${daysUntil} day${daysUntil === 1 ? "" : "s"}`,
+    }
+  }
+
+  if (daysSinceStart >= totalDays) {
+    return { label: "Completed", helpText: "Trip has ended" }
+  }
+
+  const currentDay = daysSinceStart + 1
+  const daysRemaining = totalDays - currentDay
+  return {
+    label: `Day ${currentDay} of ${totalDays}`,
+    helpText:
+      daysRemaining === 0 ? "Last day" : `${daysRemaining} day${daysRemaining === 1 ? "" : "s"} left`,
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,8 +239,9 @@ export function SummaryCards() {
       },
       (error) => {
         // Settings genuinely is worth a toast even on this passive page —
-        // if it fails, Remaining Budget silently can't be computed, and
-        // that's worth knowing about rather than just seeing a dash.
+        // if it fails, Remaining Budget and Total Budget silently can't
+        // be computed, and that's worth knowing about rather than just
+        // seeing a dash.
         toast.error(getErrorMessage(error))
         setSettingsLoading(false)
       }
@@ -204,7 +262,24 @@ export function SummaryCards() {
   const kittyTotals = React.useMemo(() => {
     return expenses.data.reduce(
       (totals, expense) => {
-        if (expense.split !== "Kitty") return totals
+        if (expense.splitType !== "Shared") return totals
+        if (expense.currency === "INR") totals.inr += expense.amount
+        else totals.npr += expense.amount
+        return totals
+      },
+      { inr: 0, npr: 0 }
+    )
+  }, [expenses.data])
+
+  // Food Cost — every Food-category expense counts, Shared or Personal,
+  // since this is a category rollup, not a settlement figure. Unlike
+  // Kitty Spend (which deliberately excludes Personal), "how much has the
+  // group spent on food in total" should include everyone's food
+  // purchases, whoever ends up paying whom back for them.
+  const foodTotals = React.useMemo(() => {
+    return expenses.data.reduce(
+      (totals, expense) => {
+        if (expense.category !== "Food") return totals
         if (expense.currency === "INR") totals.inr += expense.amount
         else totals.npr += expense.amount
         return totals
@@ -226,9 +301,25 @@ export function SummaryCards() {
   }, [fuelEntries.data])
 
   const tollTotal = React.useMemo(
-    () => tolls.data.reduce((sum, entry) => sum + entry.carAAmount + entry.carBAmount, 0),
+    () => tolls.data.reduce((sum, entry) => sum + entry.amount, 0),
     [tolls.data]
   )
+
+  // Hotel Cost — sums each booking's total (rooms × rate × nights),
+  // split by currency, skipping any booking that doesn't have enough
+  // information yet to compute a total.
+  const hotelCostTotals = React.useMemo(() => {
+    return hotelBookings.data.reduce(
+      (totals, booking) => {
+        const cost = computeHotelTotalCost(booking)
+        if (cost === null) return totals
+        if (booking.currency === "INR") totals.inr += cost
+        else totals.npr += cost
+        return totals
+      },
+      { inr: 0, npr: 0 }
+    )
+  }, [hotelBookings.data])
 
   const hotelsNotBookedCount = React.useMemo(
     () => hotelBookings.data.filter((b) => b.status === "Not Booked").length,
@@ -254,6 +345,11 @@ export function SummaryCards() {
     if (!settings || settings.totalBudgetCollected === null) return null
     return settings.totalBudgetCollected - kittyTotals.inr
   }, [settings, kittyTotals.inr])
+
+  const tripProgress = React.useMemo(() => {
+    if (!settings) return null
+    return computeTripProgress(settings.startDate, settings.endDate)
+  }, [settings])
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -282,16 +378,19 @@ export function SummaryCards() {
       />
 
       <StatCard
-        loading={expenses.loading}
-        icon={Wallet}
-        label="Group Expenses"
-        value={expenses.error ? "—" : formatDualCurrency(kittyTotals.inr, kittyTotals.npr)}
-        helpText={
-          expenses.error
-            ? "Couldn't load"
-            : `${expenses.data.length} expense${expenses.data.length === 1 ? "" : "s"} logged`
+        loading={settingsLoading}
+        icon={Landmark}
+        label="Total Budget"
+        value={
+          settings?.totalBudgetCollected !== null && settings?.totalBudgetCollected !== undefined
+            ? formatInr(settings.totalBudgetCollected)
+            : "—"
         }
-        accentClassName="bg-amber-500/10 text-amber-600 dark:text-amber-400"
+        helpText={
+          settings?.totalBudgetCollected !== null && settings?.totalBudgetCollected !== undefined
+            ? "Collected upfront"
+            : "Set in Settings"
+        }
       />
 
       <StatCard
@@ -307,9 +406,30 @@ export function SummaryCards() {
       />
 
       <StatCard
+        loading={expenses.loading}
+        icon={Wallet}
+        label="Group Expenses"
+        value={expenses.error ? "—" : formatDualCurrency(kittyTotals.inr, kittyTotals.npr)}
+        helpText={
+          expenses.error
+            ? "Couldn't load"
+            : `${expenses.data.length} expense${expenses.data.length === 1 ? "" : "s"} logged`
+        }
+        accentClassName="bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      />
+
+      <StatCard
+        loading={expenses.loading}
+        icon={UtensilsCrossed}
+        label="Food Cost"
+        value={expenses.error ? "—" : formatDualCurrency(foodTotals.inr, foodTotals.npr)}
+        helpText={expenses.error ? "Couldn't load" : "All food purchases, shared or personal"}
+      />
+
+      <StatCard
         loading={fuelEntries.loading}
         icon={FuelIcon}
-        label="Fuel"
+        label="Fuel Cost"
         value={fuelEntries.error ? "—" : `${fuelTotals.litres}L`}
         helpText={
           fuelEntries.error
@@ -321,7 +441,7 @@ export function SummaryCards() {
       <StatCard
         loading={tolls.loading}
         icon={RouteIcon}
-        label="Tolls"
+        label="Toll Cost"
         value={tolls.error ? "—" : formatInr(tollTotal)}
         helpText={
           tolls.error
@@ -333,8 +453,12 @@ export function SummaryCards() {
       <StatCard
         loading={hotelBookings.loading}
         icon={BedDouble}
-        label="Hotels"
-        value={hotelBookings.error ? "—" : `${hotelBookings.data.length}`}
+        label="Hotel Cost"
+        value={
+          hotelBookings.error
+            ? "—"
+            : formatDualCurrency(hotelCostTotals.inr, hotelCostTotals.npr)
+        }
         helpText={
           hotelBookings.error
             ? "Couldn't load"
@@ -376,6 +500,14 @@ export function SummaryCards() {
             : `${timelineCompletedCount}/${timelineEntries.data.length}`
         }
         helpText={timelineEntries.error ? "Couldn't load" : "legs completed"}
+      />
+
+      <StatCard
+        loading={settingsLoading}
+        icon={CalendarClock}
+        label="Trip Progress"
+        value={tripProgress?.label ?? "—"}
+        helpText={tripProgress?.helpText ?? "Set start/end dates in Settings"}
       />
 
       <StatCard

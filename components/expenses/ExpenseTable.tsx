@@ -5,19 +5,11 @@
  * ─────────────────────────────────────────────────────────────────────────
  * The Expense Management module's container component — Firestore-backed.
  *
- * The old "Per-Person Kitty Contribution" section is replaced with a full
- * Settlement section: per-person Paid/Owed/Net balances, plus concrete
- * "X pays Y ₹amount" instructions — computed via lib/settlement.ts, kept
- * separate from this file since it's pure calculation logic, not UI.
- *
- * Computed once per currency (INR always shown if there's any Shared INR
- * spend; NPR only shown if there's Shared NPR spend) — currencies are
- * never blended, same rule as everywhere else in this app, and this is
- * real money changing hands between real people, not just a display
- * estimate.
- *
- * "Kitty only" filter renamed to "Shared only", matching the renamed
- * concept (splitType, not the old binary "split" field).
+ * Print added specifically for the Settlement section — a physical
+ * printout of "who pays whom" is a reasonable thing to want at the end of
+ * the trip, as a record everyone can see and agree on. The Settlement
+ * cards themselves stay visible when printing; search, the Shared-only
+ * filter, view toggle, and every row's Edit/Delete are print:hidden.
  */
 
 import * as React from "react"
@@ -27,6 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PrintButton } from "@/components/ui/print-button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Table,
@@ -85,9 +78,6 @@ function splitBadgeVariant(splitType: Expense["splitType"]): "default" | "outlin
   return splitType === "Shared" ? "default" : "outline"
 }
 
-/** Formats an amount with its currency — INR gets full Intl currency
- *  formatting (₹ + Indian digit grouping); NPR is shown plainly since
- *  Intl.NumberFormat has no built-in NPR currency symbol support. */
 function formatAmount(amount: number, currency: ExpenseCurrency): string {
   if (currency === "INR") {
     return new Intl.NumberFormat("en-IN", {
@@ -154,9 +144,9 @@ function SettlementSection({ expenses, currency }: SettlementSectionProps) {
                 <span
                   className={
                     person.net > 0.5
-                      ? "font-medium text-emerald-600 dark:text-emerald-400"
+                      ? "font-medium text-emerald-600 dark:text-emerald-400 print:text-black"
                       : person.net < -0.5
-                        ? "font-medium text-destructive"
+                        ? "font-medium text-destructive print:text-black"
                         : "text-muted-foreground"
                   }
                 >
@@ -253,7 +243,7 @@ function TableView({ expenses, onEdit, onDelete }: TableViewProps) {
             <TableHead>Amount</TableHead>
             <TableHead>Paid By</TableHead>
             <TableHead>Split</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right print:hidden">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -271,7 +261,7 @@ function TableView({ expenses, onEdit, onDelete }: TableViewProps) {
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label="View receipt"
-                      className="shrink-0 text-primary hover:text-primary/80"
+                      className="shrink-0 text-primary hover:text-primary/80 print:hidden"
                     >
                       <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
                     </a>
@@ -292,7 +282,7 @@ function TableView({ expenses, onEdit, onDelete }: TableViewProps) {
                     : "Personal"}
                 </Badge>
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right print:hidden">
                 <div className="flex justify-end gap-1">
                   <Button
                     type="button"
@@ -437,7 +427,9 @@ export function ExpenseTable() {
         </p>
       </div>
 
-      {/* Settlement — one block per currency that actually has shared spend */}
+      {/* Settlement — one block per currency that actually has shared spend.
+          Stays visible when printing; this is the whole point of the Print
+          button on this page. */}
       {!loading && (
         <>
           <SettlementSection expenses={expenses} currency="INR" />
@@ -445,8 +437,8 @@ export function ExpenseTable() {
         </>
       )}
 
-      {/* Toolbar: search, shared-only filter, view toggle, add */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Toolbar: search, shared-only filter, view toggle, print, add */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div className="relative w-full sm:max-w-xs">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -499,6 +491,8 @@ export function ExpenseTable() {
             </Button>
           </div>
 
+          <PrintButton />
+
           <Button type="button" size="sm" className="gap-1.5" onClick={handleAddClick}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             Add Expense
@@ -530,7 +524,7 @@ export function ExpenseTable() {
           onDelete={handleDeleteClick}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 print:hidden">
           {filteredExpenses.map((expense) => (
             <ExpenseCard
               key={expense.id}

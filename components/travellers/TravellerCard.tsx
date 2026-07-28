@@ -4,8 +4,7 @@
  * TravellerCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single traveller — used by TravellerTable's
- * Card View. Shows `assignedVehicleName` (the real Vehicle reference's
- * display name) instead of the old fixed "Car A"/"Car B" enum.
+ * Card View. Edit/Delete footer is print:hidden.
  */
 
 import { cn } from "@/lib/utils"
@@ -109,7 +108,7 @@ export function TravellerCard({ traveller, onEdit, onDelete }: TravellerCardProp
         )}
       </CardContent>
 
-      <CardFooter className="gap-2">
+      <CardFooter className="gap-2 print:hidden">
         <Button
           type="button"
           variant="outline"

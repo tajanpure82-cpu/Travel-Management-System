@@ -3,15 +3,14 @@
 /**
  * TimelineTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Trip Timeline module's container component — Firestore-backed,
- * following the pattern proven in TravellerTable/VehicleTable/etc.
+ * The Trip Timeline module's container component — Firestore-backed.
+ * Print added: a printed itinerary is a reasonable backup to have on
+ * paper. Search, filter, view toggle, and Edit/Delete are print:hidden.
  *
  * Entries are always displayed sorted by day number ascending (entries
  * with no day set sort last) — computed client-side via `sortByDay`,
- * exactly as before this collection existed in Firestore. Firestore's own
- * `orderBy` can't express "nulls last" on a nullable field, so no
- * `orderByField` is passed to the subscription at all; the client-side
- * sort is the only ordering mechanism, same as it always was.
+ * unchanged from before. No orderByField is passed to the Firestore
+ * subscription — see services/timeline/timeline.service.ts for why.
  */
 
 import * as React from "react"
@@ -22,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PrintButton } from "@/components/ui/print-button"
 import {
   Table,
   TableBody,
@@ -70,9 +70,6 @@ type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; entry: TimelineEntry } | null
 
-/** Kept local to each file that needs it (also duplicated in
- *  TimelineCard) rather than exported, purely to avoid a value-level
- *  circular import between the sibling files for small pure functions. */
 function statusBadgeVariant(
   status: TimelineStatus
 ): "default" | "secondary" | "outline" {
@@ -164,7 +161,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
             <TableHead>Date</TableHead>
             <TableHead>Distance</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right print:hidden">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -185,7 +182,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
                   {entry.status}
                 </Badge>
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right print:hidden">
                 <div className="flex justify-end gap-1">
                   <Button
                     type="button"
@@ -230,9 +227,8 @@ export function TimelineTable() {
   const [deleteTarget, setDeleteTarget] = React.useState<TimelineEntry | null>(null)
   const [isDeleting, setIsDeleting] = React.useState(false)
 
-  // Real-time Firestore subscription — fires immediately with the current
-  // data, then again on every add/edit/delete from any browser/device.
-  // No orderByField here — see the file header comment for why.
+  // Real-time Firestore subscription — no orderByField here, see the
+  // service file for why.
   React.useEffect(() => {
     const unsubscribe = subscribeToTimelineEntries(
       (data) => {
@@ -315,8 +311,8 @@ export function TimelineTable() {
         </p>
       </div>
 
-      {/* Toolbar: search, hide-completed filter, view toggle, add */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Toolbar: search, hide-completed filter, view toggle, print, add */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div className="relative w-full sm:max-w-xs">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -368,6 +364,8 @@ export function TimelineTable() {
               <span className="hidden sm:inline">Cards</span>
             </Button>
           </div>
+
+          <PrintButton />
 
           <Button type="button" size="sm" className="gap-1.5" onClick={handleAddClick}>
             <Plus className="h-4 w-4" aria-hidden="true" />

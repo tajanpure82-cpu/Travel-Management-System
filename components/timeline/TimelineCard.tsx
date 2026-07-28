@@ -4,9 +4,7 @@
  * TimelineCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single timeline entry — used by
- * TimelineTable's Card View. Only the type import changed for the
- * Firestore migration (now from @/types/timeline instead of sideways
- * from ./TimelineTable).
+ * TimelineTable's Card View. Edit/Delete footer is print:hidden.
  */
 
 import { format, isValid, parseISO } from "date-fns"
@@ -32,9 +30,6 @@ interface TimelineCardProps {
   onDelete: (entry: TimelineEntry) => void
 }
 
-/** Kept local rather than imported — see the note in TimelineTable's
- *  TableView about avoiding a value-level circular import for small
- *  helpers. */
 function statusBadgeVariant(
   status: TimelineStatus
 ): "default" | "secondary" | "outline" {
@@ -89,7 +84,7 @@ export function TimelineCard({ entry, onEdit, onDelete }: TimelineCardProps) {
         )}
       </CardContent>
 
-      <CardFooter className="gap-2">
+      <CardFooter className="gap-2 print:hidden">
         <Button
           type="button"
           variant="outline"

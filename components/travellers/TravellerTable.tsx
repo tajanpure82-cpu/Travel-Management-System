@@ -4,15 +4,11 @@
  * TravellerTable
  * ─────────────────────────────────────────────────────────────────────────
  * The Traveller Management module's container component — Firestore-
- * backed. "Assigned Vehicle" is now a real Vehicle reference
- * (assignedVehicleId + assignedVehicleName), not a fixed "Car A"/"Car B"
- * enum — see types/traveller.ts and AddTravellerDialog.tsx.
- *
- * This file adds a "Travellers by Vehicle" headcount summary, same shape
- * as the per-person/per-vehicle summaries in Expenses/Fuel/Tolls — useful
- * for balancing seating across vehicles. "Unassigned" always sorts last,
- * regardless of count, since it's the bucket that needs attention, not
- * a vehicle to compare against the others.
+ * backed. Print added: a roster with blood groups and emergency contacts
+ * is genuinely useful on paper (e.g. handed to a hospital). Search,
+ * driver filter, view toggle, and Edit/Delete are print:hidden; the
+ * "Travellers by Vehicle" summary stays visible since it's useful
+ * context on a printout, not interactive chrome.
  */
 
 import * as React from "react"
@@ -22,6 +18,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PrintButton } from "@/components/ui/print-button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Table,
@@ -73,9 +70,6 @@ type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; traveller: Traveller } | null
 
-/** Kept local to each file that needs it (also duplicated in TravellerCard)
- *  rather than exported, purely to avoid a value-level circular import
- *  between the sibling files for a 3-line pure function. */
 function documentBadgeVariant(
   status: DocumentStatus
 ): "default" | "destructive" | "secondary" {
@@ -194,7 +188,7 @@ function TableView({ travellers, onEdit, onDelete }: TableViewProps) {
             <TableHead>Driver</TableHead>
             <TableHead>Vehicle / Seat</TableHead>
             <TableHead>Documents</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right print:hidden">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -239,7 +233,7 @@ function TableView({ travellers, onEdit, onDelete }: TableViewProps) {
                   </Badge>
                 </div>
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right print:hidden">
                 <div className="flex justify-end gap-1">
                   <Button
                     type="button"
@@ -318,8 +312,6 @@ export function TravellerTable() {
     [travellers]
   )
 
-  // Headcount per vehicle, "Unassigned" always sorted last regardless of
-  // count — it's the bucket that needs attention, not one to compare.
   const vehicleGroups = React.useMemo<VehicleGroupCount[]>(() => {
     const byVehicle = new Map<string, VehicleGroupCount>()
     for (const traveller of travellers) {
@@ -388,11 +380,11 @@ export function TravellerTable() {
         </p>
       </div>
 
-      {/* Headcount per vehicle — only shown once there's data to summarize */}
+      {/* Headcount per vehicle — stays visible when printing */}
       {!loading && <VehicleGroupSummary groups={vehicleGroups} />}
 
-      {/* Toolbar: search, drivers-only filter, view toggle, add */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Toolbar: search, drivers-only filter, view toggle, print, add */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div className="relative w-full sm:max-w-xs">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -444,6 +436,8 @@ export function TravellerTable() {
               <span className="hidden sm:inline">Cards</span>
             </Button>
           </div>
+
+          <PrintButton />
 
           <Button type="button" size="sm" className="gap-1.5" onClick={handleAddClick}>
             <Plus className="h-4 w-4" aria-hidden="true" />

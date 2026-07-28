@@ -7,15 +7,26 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`expense` props
  * from ExpenseTable.
  *
- * "Split" is now Shared/Personal + (when Shared) an explicit checkbox
- * list of exactly who this expense applies to — not an all-or-nothing
- * toggle. This is what makes "only the 4 people who smoke" possible.
- * "Select all" / "Clear" are convenience buttons over the same checkbox
- * list, for the common case of splitting among everyone.
+ * "Paid By" is a live dropdown of real Travellers; "Split Among" is a
+ * checkbox list of exactly who this expense applies to — not an
+ * all-or-nothing toggle.
  *
- * Receipt upload and the Paid By dropdown are unchanged from the earlier
- * relationship work — this dialog already subscribed to Travellers for
- * that, and the same subscription now also feeds the split checklist.
+ * Build-fix note: Base UI's Select `onValueChange` is typed as
+ * `(value: string | null) => void` — unlike Radix, which is
+ * `(value: string) => void`. Every onValueChange handler in this file
+ * accounts for that explicitly now:
+ *   - `paidById` is a plain `string` field — `value ?? ""` produces an
+ *     honest `string` with no assertion needed at all.
+ *   - `category`/`currency`/`splitType` are string-literal unions.
+ *     TypeScript can't statically narrow a generic string to a literal
+ *     union without either a runtime check or an assertion, so each
+ *     handler guards against `null` first, then asserts only the
+ *     guaranteed-non-null remainder — narrowing a real `string`, not
+ *     masking a `string | null` the way an unguarded `as X` would.
+ *   `updateField` itself needed no changes — it was already correctly
+ *   generic (`FormState[K]`); the mismatch was only ever at these call
+ *   sites, where Base UI's wider callback type met FormState's stricter
+ *   per-field types.
  */
 
 import * as React from "react"
@@ -312,7 +323,10 @@ export function AddExpenseDialog({
               <Label htmlFor="expense-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) => updateField("category", value as ExpenseCategory)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("category", value as ExpenseCategory)
+                }}
               >
                 <SelectTrigger id="expense-category">
                   <SelectValue />
@@ -345,7 +359,10 @@ export function AddExpenseDialog({
               <Label htmlFor="expense-currency">Currency</Label>
               <Select
                 value={form.currency}
-                onValueChange={(value) => updateField("currency", value as ExpenseCurrency)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("currency", value as ExpenseCurrency)
+                }}
               >
                 <SelectTrigger id="expense-currency">
                   <SelectValue />
@@ -364,7 +381,7 @@ export function AddExpenseDialog({
               <Label htmlFor="expense-paid-by">Paid By *</Label>
               <Select
                 value={form.paidById}
-                onValueChange={(value) => updateField("paidById", value)}
+                onValueChange={(value) => updateField("paidById", value ?? "")}
               >
                 <SelectTrigger id="expense-paid-by">
                   <SelectValue placeholder="Select who paid" />
@@ -389,7 +406,10 @@ export function AddExpenseDialog({
               <Label htmlFor="expense-split-type">Split</Label>
               <Select
                 value={form.splitType}
-                onValueChange={(value) => updateField("splitType", value as ExpenseSplitType)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("splitType", value as ExpenseSplitType)
+                }}
               >
                 <SelectTrigger id="expense-split-type">
                   <SelectValue />

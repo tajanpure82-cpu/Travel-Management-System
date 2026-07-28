@@ -4,7 +4,9 @@
  * TimelineCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single timeline entry — used by
- * TimelineTable's Card View.
+ * TimelineTable's Card View. Only the type import changed for the
+ * Firestore migration (now from @/types/timeline instead of sideways
+ * from ./TimelineTable).
  */
 
 import { format, isValid, parseISO } from "date-fns"
@@ -22,7 +24,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Calendar, Route } from "lucide-react"
 
-import type { TimelineEntry, TimelineStatus } from "./TimelineTable"
+import type { TimelineEntry, TimelineStatus } from "@/types/timeline"
 
 interface TimelineCardProps {
   entry: TimelineEntry

@@ -4,7 +4,7 @@
  * FuelCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single fuel entry — used by FuelTable's Card
- * View.
+ * View. Shows `vehicleName` (the real Vehicle reference's display name).
  */
 
 import { format, isValid, parseISO } from "date-fns"
@@ -22,7 +22,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Calendar, MapPin, Gauge } from "lucide-react"
 
-import type { FuelEntry, FuelCurrency } from "./FuelTable"
+import type { FuelEntry, FuelCurrency } from "@/types/fuel"
 
 interface FuelCardProps {
   entry: FuelEntry
@@ -61,7 +61,7 @@ export function FuelCard({ entry, onEdit, onDelete }: FuelCardProps) {
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <CardTitle className="truncate text-base">
-              {entry.vehicle || "Unassigned vehicle"}
+              {entry.vehicleName || "Unassigned vehicle"}
             </CardTitle>
             <CardDescription className="text-lg font-semibold text-foreground">
               {formatAmount(entry.amount, entry.currency)}

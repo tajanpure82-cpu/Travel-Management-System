@@ -3,12 +3,15 @@
 /**
  * AddChecklistDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single checklist item — same
- * pattern as AddTravellerDialog / AddVehicleDialog / etc: no
+ * Fully controlled Add/Edit dialog for a single checklist item — no
  * <DialogTrigger> of its own, driven entirely by `open`/`item` props from
  * ChecklistTable.
  *
- * Mode is inferred from `item`: null/undefined = Add, a ChecklistItem = Edit.
+ * Firestore migration change: `onSubmit` now receives the form data
+ * (without an id) plus the existing id *only* when editing. Note this is
+ * a *separate* path from the quick complete-toggle in ChecklistTable —
+ * this dialog's own "Already completed" checkbox is for setting/
+ * correcting the field alongside everything else, not the fast path.
  */
 
 import * as React from "react"
@@ -35,15 +38,12 @@ import {
 } from "@/components/ui/dialog"
 
 import type {
-  ChecklistItem,
   ChecklistCategory,
+  ChecklistItem,
   ChecklistPriority,
-} from "./ChecklistTable"
+  NewChecklistItem,
+} from "@/types/checklist"
 
-// Local copies of the option lists — kept in this file (rather than
-// imported as values from ChecklistTable) purely to avoid a value-level
-// circular import between the two sibling components. Only *types* are
-// shared across files here.
 const CHECKLIST_CATEGORIES: ChecklistCategory[] = [
   "Pre-Trip",
   "Documents",
@@ -60,7 +60,8 @@ interface AddChecklistDialogProps {
   onOpenChange: (open: boolean) => void
   /** Item being edited, or null/undefined to add a new one. */
   item?: ChecklistItem | null
-  onSubmit: (item: ChecklistItem) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewChecklistItem, id?: string) => void
 }
 
 interface FormState {
@@ -121,14 +122,15 @@ export function AddChecklistDialog({
       return
     }
 
-    onSubmit({
-      id: item?.id ?? crypto.randomUUID(),
+    const data: NewChecklistItem = {
       title: form.title.trim(),
       category: form.category,
       priority: form.priority,
       completed: form.completed,
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, item?.id)
   }
 
   return (

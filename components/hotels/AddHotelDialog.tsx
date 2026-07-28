@@ -3,12 +3,16 @@
 /**
  * AddHotelDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single hotel booking — same
- * pattern as AddTravellerDialog / AddVehicleDialog / AddExpenseDialog /
- * AddFuelDialog: no <DialogTrigger> of its own, driven entirely by
- * `open`/`booking` props from HotelTable.
+ * Fully controlled Add/Edit dialog for a single hotel booking — no
+ * <DialogTrigger> of its own, driven entirely by `open`/`booking` props
+ * from HotelTable.
  *
- * Mode is inferred from `booking`: null/undefined = Add, a HotelBooking = Edit.
+ * "Assigned Travellers" is a checkbox list, not a Select — a booking can
+ * have several travellers, which a single-value dropdown can't express.
+ * Reuses the same Checkbox component already used for "Parking
+ * confirmed"/"Free cancellation" elsewhere in this dialog — no new
+ * shadcn component needed. This dialog subscribes to the Travellers
+ * collection itself (read-only, just for the checkbox options).
  */
 
 import * as React from "react"
@@ -34,17 +38,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
+import { subscribeToTravellers } from "@/services/travellers/travellers.service"
+import type { Traveller } from "@/types/traveller"
 import type {
+  AssignedTraveller,
+  BookingStatus,
   HotelBooking,
   HotelCity,
   HotelCurrency,
-  BookingStatus,
-} from "./HotelTable"
+  NewHotelBooking,
+} from "@/types/hotel"
 
-// Local copies of the option lists — kept in this file (rather than
-// imported as values from HotelTable) purely to avoid a value-level
-// circular import between the two sibling components. Only *types* are
-// shared across files here.
 const HOTEL_CITIES: HotelCity[] = [
   "Raipur",
   "Puri",
@@ -68,7 +72,8 @@ interface AddHotelDialogProps {
   onOpenChange: (open: boolean) => void
   /** Booking being edited, or null/undefined to add a new one. */
   booking?: HotelBooking | null
-  onSubmit: (booking: HotelBooking) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewHotelBooking, id?: string) => void
 }
 
 interface FormState {
@@ -83,6 +88,7 @@ interface FormState {
   freeCancellation: boolean
   status: BookingStatus
   contactPhone: string
+  assignedTravellerIds: string[]
   notes: string
 }
 
@@ -103,6 +109,7 @@ function emptyForm(): FormState {
     freeCancellation: false,
     status: "Not Booked",
     contactPhone: "",
+    assignedTravellerIds: [],
     notes: "",
   }
 }
@@ -120,14 +127,14 @@ function bookingToForm(booking: HotelBooking): FormState {
     freeCancellation: booking.freeCancellation,
     status: booking.status,
     contactPhone: booking.contactPhone,
+    assignedTravellerIds: booking.assignedTravellers.map((t) => t.travellerId),
     notes: booking.notes,
   }
 }
 
 /** Empty string -> null. Negative numbers and non-numeric input also
  *  become null -- the HTML `min` attribute on these inputs is only a
- *  soft hint (some mobile keyboards and manual edits can still produce
- *  a negative value), so this is the actual enforcement. */
+ *  soft hint, so this is the actual enforcement. */
 function parseOptionalNumber(value: string): number | null {
   const trimmed = value.trim()
   if (trimmed === "") return null
@@ -145,6 +152,14 @@ export function AddHotelDialog({
   const isEditMode = Boolean(booking)
   const [form, setForm] = React.useState<FormState>(emptyForm)
   const [error, setError] = React.useState<string | null>(null)
+  const [travellers, setTravellers] = React.useState<Traveller[]>([])
+
+  // Read-only subscription, just to populate the traveller checkbox
+  // list. This dialog never writes to the Travellers collection.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTravellers((data) => setTravellers(data))
+    return unsubscribe
+  }, [])
 
   // Re-seed the form every time the dialog opens, matching whichever
   // booking (if any) it was opened for.
@@ -158,6 +173,15 @@ export function AddHotelDialog({
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
+  function toggleTraveller(travellerId: string, checked: boolean) {
+    setForm((prev) => ({
+      ...prev,
+      assignedTravellerIds: checked
+        ? [...prev.assignedTravellerIds, travellerId]
+        : prev.assignedTravellerIds.filter((id) => id !== travellerId),
+    }))
+  }
+
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -166,8 +190,14 @@ export function AddHotelDialog({
       return
     }
 
-    onSubmit({
-      id: booking?.id ?? crypto.randomUUID(),
+    const assignedTravellers: AssignedTraveller[] = form.assignedTravellerIds
+      .map((id) => {
+        const traveller = travellers.find((t) => t.id === id)
+        return traveller ? { travellerId: traveller.id, travellerName: traveller.name } : null
+      })
+      .filter((entry): entry is AssignedTraveller => entry !== null)
+
+    const data: NewHotelBooking = {
       city: form.city,
       hotelName: form.hotelName.trim(),
       checkInDate: form.checkInDate,
@@ -179,8 +209,11 @@ export function AddHotelDialog({
       freeCancellation: form.freeCancellation,
       status: form.status,
       contactPhone: form.contactPhone.trim(),
+      assignedTravellers,
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, booking?.id)
   }
 
   return (
@@ -350,6 +383,35 @@ export function AddHotelDialog({
                 Free cancellation
               </Label>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Assigned Travellers</Label>
+            {travellers.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                Add travellers first, then come back to assign them here.
+              </p>
+            ) : (
+              <div className="max-h-40 space-y-2 overflow-y-auto rounded-md border border-input p-3">
+                {travellers.map((traveller) => (
+                  <div key={traveller.id} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`hotel-traveller-${traveller.id}`}
+                      checked={form.assignedTravellerIds.includes(traveller.id)}
+                      onCheckedChange={(checked) =>
+                        toggleTraveller(traveller.id, checked === true)
+                      }
+                    />
+                    <Label
+                      htmlFor={`hotel-traveller-${traveller.id}`}
+                      className="cursor-pointer font-normal"
+                    >
+                      {traveller.name}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">

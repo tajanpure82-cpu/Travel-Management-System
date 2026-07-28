@@ -5,7 +5,10 @@
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single checklist item — used by
  * ChecklistTable's Card View. Includes the same quick complete-toggle as
- * the Table View.
+ * the Table View. Only the type import changed for the Firestore
+ * migration (now from @/types/checklist instead of sideways from
+ * ./ChecklistTable) — the toggle itself is still just a callback prop,
+ * this component has no idea Firestore exists.
  */
 
 import { cn } from "@/lib/utils"
@@ -22,7 +25,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, CheckCircle2, Circle } from "lucide-react"
 
-import type { ChecklistItem, ChecklistPriority } from "./ChecklistTable"
+import type { ChecklistItem, ChecklistPriority } from "@/types/checklist"
 
 interface ChecklistCardProps {
   item: ChecklistItem

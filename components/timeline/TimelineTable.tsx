@@ -3,28 +3,25 @@
 /**
  * TimelineTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Trip Timeline module's container component — same architecture as
- * TravellerTable/VehicleTable/etc: owns the shared list state, search, a
- * "Hide completed" filter, view-mode toggle, and the add/edit/delete
- * flows. TimelineCard and AddTimelineDialog are both presentational/
- * controlled and take everything they need as props.
- *
- * No backend: `entries` is local React state only, starting empty. Not
- * wired to Context yet — per current instructions, this module stays on
- * plain local state until the Dashboard integration work resumes.
+ * The Trip Timeline module's container component — Firestore-backed,
+ * following the pattern proven in TravellerTable/VehicleTable/etc.
  *
  * Entries are always displayed sorted by day number ascending (entries
- * with no day set sort last) — a timeline should read chronologically,
- * not in whatever order things were added, unlike every other module
- * here where insertion order is fine.
+ * with no day set sort last) — computed client-side via `sortByDay`,
+ * exactly as before this collection existed in Firestore. Firestore's own
+ * `orderBy` can't express "nulls last" on a nullable field, so no
+ * `orderByField` is passed to the subscription at all; the client-side
+ * sort is the only ordering mechanism, same as it always was.
  */
 
 import * as React from "react"
 import { format, isValid, parseISO } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -56,24 +53,14 @@ import {
 
 import { TimelineCard } from "./TimelineCard"
 import { AddTimelineDialog } from "./AddTimelineDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type TimelineStatus = "Upcoming" | "In Progress" | "Completed"
-
-export interface TimelineEntry {
-  id: string
-  /** Day 1–11 (or whatever numbering fits), or null if not tied to a day. */
-  day: number | null
-  /** ISO date string, or null if not yet known. */
-  date: string | null
-  title: string
-  distanceKm: number | null
-  status: TimelineStatus
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addTimelineEntry,
+  deleteTimelineEntry,
+  subscribeToTimelineEntries,
+  updateTimelineEntry,
+} from "@/services/timeline/timeline.service"
+import type { NewTimelineEntry, TimelineEntry, TimelineStatus } from "@/types/timeline"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -108,6 +95,20 @@ function sortByDay(entries: TimelineEntry[]): TimelineEntry[] {
     if (b.day === null) return -1
     return a.day - b.day
   })
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -221,11 +222,30 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
 
 export function TimelineTable() {
   const [entries, setEntries] = React.useState<TimelineEntry[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [hideCompleted, setHideCompleted] = React.useState(false)
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<TimelineEntry | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  // No orderByField here — see the file header comment for why.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTimelineEntries(
+      (data) => {
+        setEntries(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredEntries = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -256,18 +276,33 @@ export function TimelineTable() {
     setDeleteTarget(entry)
   }
 
-  function handleDialogSubmit(entry: TimelineEntry) {
-    setEntries((prev) => {
-      const exists = prev.some((e) => e.id === entry.id)
-      return exists ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev, entry]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewTimelineEntry, id?: string) {
+    try {
+      if (id) {
+        await updateTimelineEntry(id, data)
+        toast.success("Leg updated")
+      } else {
+        await addTimelineEntry(data)
+        toast.success("Leg added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteTimelineEntry(deleteTarget.id)
+      toast.success("Leg deleted")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -342,7 +377,9 @@ export function TimelineTable() {
       </div>
 
       {/* Content */}
-      {entries.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : entries.length === 0 ? (
         <EmptyState
           icon={MapIcon}
           title="No timeline entries yet"
@@ -390,7 +427,7 @@ export function TimelineTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -403,12 +440,13 @@ export function TimelineTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

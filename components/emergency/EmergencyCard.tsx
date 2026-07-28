@@ -6,7 +6,9 @@
  * Presentational card for a single emergency contact — used by
  * EmergencyTable's Card View. Deliberately calm styling (see the note in
  * EmergencyTable) — the phone number is the one element that gets a
- * clear, tappable treatment.
+ * clear, tappable treatment. Only the type import changed for the
+ * Firestore migration (now from @/types/emergency instead of sideways
+ * from ./EmergencyTable).
  */
 
 import { Button } from "@/components/ui/button"
@@ -22,7 +24,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Phone, MapPin } from "lucide-react"
 
-import type { EmergencyContact } from "./EmergencyTable"
+import type { EmergencyContact } from "@/types/emergency"
 
 interface EmergencyCardProps {
   contact: EmergencyContact

@@ -1,0 +1,72 @@
+rules_version = '2';
+
+// Hardened from the Phase 1 baseline now that every collection's real
+// shape is known (all 11 modules migrated). Two changes from the
+// original wildcard rule:
+//
+//   1. Explicit per-collection matches instead of one `{document=**}`
+//      wildcard. Anything NOT listed here is denied by default — a safer
+//      posture than allow-everything. If a 12th collection is ever added
+//      without a matching rule below, it's closed, not silently open.
+//
+//   2. Settings is locked to its one fixed document ID ("trip") — it's a
+//      singleton by design (see types/settings.ts), and this blocks any
+//      accidental or malicious write from creating a second settings
+//      document under a different ID.
+//
+// Still "any signed-in user, full access" within those bounds — this is
+// a shared trip dashboard for a closed group, not a multi-tenant product,
+// so there's no per-user data isolation to enforce, only "are you one of
+// the people on this trip." Per-field validation (requiring exact types/
+// required fields per collection) would be real additional hardening but
+// is a much larger, harder-to-verify rules file for a group this size —
+// deliberately not done here, flagged as a future option instead.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /travellers/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /vehicles/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /expenses/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /fuelEntries/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /tolls/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /hotelBookings/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /documents/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /checklistItems/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /emergencyContacts/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /timelineEntries/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Singleton — only settings/trip may ever exist.
+    match /settings/{settingsId} {
+      allow read, write: if request.auth != null && settingsId == "trip";
+    }
+  }
+}

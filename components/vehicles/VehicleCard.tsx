@@ -4,8 +4,9 @@
  * VehicleCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single vehicle — used by VehicleTable's Card
- * View. Shows every field, including Notes, which the compact Table View
- * leaves out.
+ * View. Only the type import changed for the Firestore migration (now
+ * from @/types/vehicle instead of sideways from ./VehicleTable) — this
+ * component has no idea Firestore exists, same as before.
  */
 
 import { cn } from "@/lib/utils"
@@ -22,7 +23,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Hash, Users, User, Fuel, Gauge, Wrench } from "lucide-react"
 
-import type { Vehicle, VehicleStatus } from "./VehicleTable"
+import type { Vehicle, VehicleStatus } from "@/types/vehicle"
 
 interface VehicleCardProps {
   vehicle: Vehicle
@@ -103,7 +104,9 @@ export function VehicleCard({ vehicle, onEdit, onDelete }: VehicleCardProps) {
                   : "bg-muted/50 text-muted-foreground"
               )}
             >
-              {needsAttention && <Wrench className="h-4 w-4 shrink-0" aria-hidden="true" />}
+              {needsAttention && (
+                <Wrench className="h-4 w-4 shrink-0" aria-hidden="true" />
+              )}
               <span>{vehicle.notes}</span>
             </div>
           </>

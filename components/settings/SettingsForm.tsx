@@ -4,25 +4,28 @@
  * SettingsForm
  * ─────────────────────────────────────────────────────────────────────────
  * Settings is a deliberate architectural exception in this codebase: a
- * singleton form for trip-wide values, not a list-based CRUD module. So
- * there's no SettingsTable, SettingsCard, or AddSettingsDialog — just
- * this one form component, matching this project's own established
- * convention for Settings.
+ * singleton form for trip-wide values, not a list-based CRUD module. No
+ * SettingsTable, SettingsCard, or AddSettingsDialog — just this one form
+ * component, matching this project's own established convention.
  *
- * No backend: everything is local React state. There's a real Save
- * action (a `draft` state bound to the inputs, committed into a separate
- * `saved` state on submit) rather than silently persisting on every
- * keystroke — matching how every other module here requires a deliberate
- * submit action instead of an implicit autosave. That said, without a
- * persistence layer, both `draft` and `saved` still live only in memory
- * and reset on a page refresh, the same as every other module.
+ * Firestore migration: reads/writes a single fixed document (settings/
+ * trip) via subscribeToTripSettings / saveTripSettings, not a collection.
  *
- * Starts blank rather than pre-filled with this project's real trip name
- * and dates (1–11 Aug 2026) — same discipline as every other module's
- * empty starting state, even though those values are real and known.
+ * Concurrent-edit handling: the form only re-syncs its fields from a live
+ * Firestore update when there are no unsaved local changes (`!isDirty`).
+ * Syncing on every snapshot regardless would silently overwrite whatever
+ * someone is mid-typing the instant anyone else saves anything, anywhere
+ * — this isn't a modal dialog that opens fresh each time, it's always on
+ * screen. While actively editing, incoming updates pause; saving still
+ * uses plain last-write-wins, same as every other module in this app.
+ *
+ * `totalBudgetCollected` (new): added specifically so the Dashboard's
+ * Remaining Budget card has a real number to subtract kitty spend from —
+ * nothing in this schema held a total-budget figure before.
  */
 
 import * as React from "react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -43,20 +46,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Settings as SettingsIcon, CheckCircle2 } from "lucide-react"
 
-export type SettingsCurrency = "INR" | "NPR"
-
-export interface TripSettings {
-  tripName: string
-  /** ISO date string, or empty if not set. */
-  startDate: string
-  /** ISO date string, or empty if not set. */
-  endDate: string
-  currency: SettingsCurrency
-  emergencyFundAmount: number | null
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import { saveTripSettings, subscribeToTripSettings } from "@/services/settings/settings.service"
+import type { SettingsCurrency, TripSettings } from "@/types/settings"
 
 const SETTINGS_CURRENCIES: SettingsCurrency[] = ["INR", "NPR"]
 
@@ -66,61 +61,145 @@ const EMPTY_SETTINGS: TripSettings = {
   endDate: "",
   currency: "INR",
   emergencyFundAmount: null,
+  totalBudgetCollected: null,
   notes: "",
 }
 
-/** Empty string → null; otherwise parse to a number (NaN also becomes null). */
+interface DraftState {
+  tripName: string
+  startDate: string
+  endDate: string
+  currency: SettingsCurrency
+  emergencyFundAmount: string
+  totalBudgetCollected: string
+  notes: string
+}
+
+function settingsToDraft(settings: TripSettings): DraftState {
+  return {
+    tripName: settings.tripName,
+    startDate: settings.startDate,
+    endDate: settings.endDate,
+    currency: settings.currency,
+    emergencyFundAmount:
+      settings.emergencyFundAmount !== null ? String(settings.emergencyFundAmount) : "",
+    totalBudgetCollected:
+      settings.totalBudgetCollected !== null ? String(settings.totalBudgetCollected) : "",
+    notes: settings.notes,
+  }
+}
+
+/** Empty string -> null. Negative numbers and non-numeric input also
+ *  become null -- the HTML `min` attribute on these inputs is only a
+ *  soft hint, so this is the actual enforcement. */
 function parseOptionalNumber(value: string): number | null {
   const trimmed = value.trim()
   if (trimmed === "") return null
   const parsed = Number(trimmed)
-  return Number.isNaN(parsed) ? null : parsed
+  if (Number.isNaN(parsed) || parsed < 0) return null
+  return parsed
+}
+
+function draftToSettings(draft: DraftState): TripSettings {
+  return {
+    tripName: draft.tripName.trim(),
+    startDate: draft.startDate,
+    endDate: draft.endDate,
+    currency: draft.currency,
+    emergencyFundAmount: parseOptionalNumber(draft.emergencyFundAmount),
+    totalBudgetCollected: parseOptionalNumber(draft.totalBudgetCollected),
+    notes: draft.notes.trim(),
+  }
+}
+
+function settingsEqual(a: TripSettings, b: TripSettings): boolean {
+  return (
+    a.tripName === b.tripName &&
+    a.startDate === b.startDate &&
+    a.endDate === b.endDate &&
+    a.currency === b.currency &&
+    a.emergencyFundAmount === b.emergencyFundAmount &&
+    a.totalBudgetCollected === b.totalBudgetCollected &&
+    a.notes === b.notes
+  )
+}
+
+function LoadingState() {
+  return (
+    <Card className="max-w-2xl">
+      <CardHeader>
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="mt-2 h-4 w-64" />
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+      </CardContent>
+    </Card>
+  )
 }
 
 export function SettingsForm() {
   const [saved, setSaved] = React.useState<TripSettings>(EMPTY_SETTINGS)
-  const [draft, setDraft] = React.useState({
-    tripName: EMPTY_SETTINGS.tripName,
-    startDate: EMPTY_SETTINGS.startDate,
-    endDate: EMPTY_SETTINGS.endDate,
-    currency: EMPTY_SETTINGS.currency,
-    emergencyFundAmount:
-      EMPTY_SETTINGS.emergencyFundAmount !== null
-        ? String(EMPTY_SETTINGS.emergencyFundAmount)
-        : "",
-    notes: EMPTY_SETTINGS.notes,
-  })
+  const [draft, setDraft] = React.useState<DraftState>(settingsToDraft(EMPTY_SETTINGS))
+  const [loading, setLoading] = React.useState(true)
+  const [isSaving, setIsSaving] = React.useState(false)
   const [justSaved, setJustSaved] = React.useState(false)
 
-  const isDirty = React.useMemo(() => {
-    return (
-      draft.tripName !== saved.tripName ||
-      draft.startDate !== saved.startDate ||
-      draft.endDate !== saved.endDate ||
-      draft.currency !== saved.currency ||
-      draft.emergencyFundAmount !==
-        (saved.emergencyFundAmount !== null ? String(saved.emergencyFundAmount) : "") ||
-      draft.notes !== saved.notes
-    )
-  }, [draft, saved])
+  const isDirty = React.useMemo(
+    () => !settingsEqual(draftToSettings(draft), saved),
+    [draft, saved]
+  )
 
-  function updateField<K extends keyof typeof draft>(key: K, value: (typeof draft)[K]) {
+  // Kept in a ref so the subscription callback (set up once, in the
+  // effect below) always reads the latest isDirty without needing to be
+  // torn down and re-subscribed every time a field changes.
+  const isDirtyRef = React.useRef(isDirty)
+  isDirtyRef.current = isDirty
+
+  // Real-time Firestore subscription — see the file header comment for
+  // why `draft` only re-syncs when there are no unsaved local changes.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTripSettings(
+      (data) => {
+        const next = data ?? EMPTY_SETTINGS
+        setSaved(next)
+        if (!isDirtyRef.current) {
+          setDraft(settingsToDraft(next))
+        }
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
+
+  function updateField<K extends keyof DraftState>(key: K, value: DraftState[K]) {
     setDraft((prev) => ({ ...prev, [key]: value }))
     setJustSaved(false)
   }
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const next: TripSettings = {
-      tripName: draft.tripName.trim(),
-      startDate: draft.startDate,
-      endDate: draft.endDate,
-      currency: draft.currency,
-      emergencyFundAmount: parseOptionalNumber(draft.emergencyFundAmount),
-      notes: draft.notes.trim(),
+    const next = draftToSettings(draft)
+    setIsSaving(true)
+    try {
+      await saveTripSettings(next)
+      setJustSaved(true)
+      toast.success("Settings saved")
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsSaving(false)
     }
-    setSaved(next)
-    setJustSaved(true)
+  }
+
+  if (loading) {
+    return <LoadingState />
   }
 
   return (
@@ -131,8 +210,7 @@ export function SettingsForm() {
           <CardTitle>Trip Settings</CardTitle>
         </div>
         <CardDescription>
-          Trip-wide values used across the dashboard. Nothing here is saved to a
-          server — it lives in this browser session only.
+          Trip-wide values used across the dashboard — shared with everyone signed in.
         </CardDescription>
       </CardHeader>
 
@@ -202,6 +280,19 @@ export function SettingsForm() {
                 placeholder="e.g. 38000"
               />
             </div>
+
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="settings-total-budget">Total Budget Collected (₹)</Label>
+              <Input
+                id="settings-total-budget"
+                type="number"
+                min={0}
+                inputMode="decimal"
+                value={draft.totalBudgetCollected}
+                onChange={(e) => updateField("totalBudgetCollected", e.target.value)}
+                placeholder="e.g. 360000"
+              />
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -217,8 +308,8 @@ export function SettingsForm() {
         </CardContent>
 
         <CardFooter className="flex items-center gap-3">
-          <Button type="submit" disabled={!isDirty}>
-            Save Changes
+          <Button type="submit" disabled={!isDirty || isSaving}>
+            {isSaving ? "Saving…" : "Save Changes"}
           </Button>
           {justSaved && !isDirty && (
             <span className="flex items-center gap-1.5 text-sm text-muted-foreground">

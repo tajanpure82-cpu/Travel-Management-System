@@ -4,7 +4,8 @@
  * HotelCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single hotel booking — used by HotelTable's
- * Card View.
+ * Card View. Shows assigned traveller names as a comma-separated line,
+ * consistent with how every other field here is a single icon + text row.
  */
 
 import { addDays, format, isValid, parseISO } from "date-fns"
@@ -22,7 +23,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Calendar, Users, Car, ShieldCheck, Phone } from "lucide-react"
 
-import type { HotelBooking, BookingStatus, HotelCurrency } from "./HotelTable"
+import type { BookingStatus, HotelBooking, HotelCurrency } from "@/types/hotel"
 
 interface HotelCardProps {
   booking: HotelBooking
@@ -104,6 +105,12 @@ export function HotelCard({ booking, onEdit, onDelete }: HotelCardProps) {
             {totalCost !== null ? ` · ${formatAmount(totalCost, booking.currency)} total` : ""}
           </span>
         </div>
+
+        {booking.assignedTravellers.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Staying here: {booking.assignedTravellers.map((t) => t.travellerName).join(", ")}
+          </p>
+        )}
 
         <div className="flex flex-wrap gap-2">
           <Badge variant={booking.parkingConfirmed ? "default" : "outline"} className="gap-1">

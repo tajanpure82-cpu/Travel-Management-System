@@ -3,26 +3,28 @@
 /**
  * VehicleTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Vehicle Management module's container component — same architecture
- * as TravellerTable: owns the shared list state, search, view-mode toggle,
- * and the add/edit/delete flows. VehicleCard and AddVehicleDialog are both
- * presentational/controlled and take everything they need as props.
+ * The Vehicle Management module's container component — Firestore-backed,
+ * following the exact pattern proven in TravellerTable: subscribe in
+ * useEffect, track a loading flag until the first snapshot arrives, route
+ * every mutation through the service layer, never call Firestore directly
+ * from here.
  *
- * No backend: `vehicles` is local React state only, starting empty. No
- * invented fleet data — a real empty state invites the first vehicle to
- * be added.
+ * Search and view-mode toggle are unchanged from the local-state version.
+ * Vehicles never had a secondary toolbar filter (unlike Travellers'
+ * "Drivers only") — that's preserved as-is, not added here.
  *
- * Note: "Driver Assigned" is a free-text field here rather than a live
- * lookup into the Travellers module. The two modules have no shared data
- * layer yet (local state only, per module) — wiring them together would
- * need a shared store/context, which is out of scope for now.
+ * Note: "Driver Assigned" is still free text, not a live lookup into the
+ * Travellers module — no shared data layer between modules exists yet;
+ * that's a separate, larger change, not something this migration touches.
  */
 
 import * as React from "react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -54,36 +56,14 @@ import {
 
 import { VehicleCard } from "./VehicleCard"
 import { AddVehicleDialog } from "./AddVehicleDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type VehicleType =
-  | "SUV"
-  | "Sedan"
-  | "Hatchback"
-  | "Tempo Traveller"
-  | "Bike"
-  | "Bus"
-  | "Other"
-
-export type FuelType = "Petrol" | "Diesel" | "CNG" | "Electric" | "Hybrid"
-
-export type VehicleStatus = "Available" | "In Use" | "Maintenance"
-
-export interface Vehicle {
-  id: string
-  name: string
-  type: VehicleType
-  registrationNumber: string
-  seatingCapacity: number | null
-  driverAssigned: string
-  fuelType: FuelType
-  mileage: number | null
-  status: VehicleStatus
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addVehicle,
+  deleteVehicle,
+  subscribeToVehicles,
+  updateVehicle,
+} from "@/services/vehicles/vehicles.service"
+import type { NewVehicle, Vehicle, VehicleStatus } from "@/types/vehicle"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -102,6 +82,20 @@ function statusBadgeVariant(
   if (status === "Available") return "default"
   if (status === "In Use") return "secondary"
   return "destructive" // Maintenance
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -227,10 +221,28 @@ function TableView({ vehicles, onEdit, onDelete }: TableViewProps) {
 
 export function VehicleTable() {
   const [vehicles, setVehicles] = React.useState<Vehicle[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<Vehicle | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToVehicles(
+      (data) => {
+        setVehicles(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredVehicles = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -260,20 +272,33 @@ export function VehicleTable() {
     setDeleteTarget(vehicle)
   }
 
-  function handleDialogSubmit(vehicle: Vehicle) {
-    setVehicles((prev) => {
-      const exists = prev.some((v) => v.id === vehicle.id)
-      return exists
-        ? prev.map((v) => (v.id === vehicle.id ? vehicle : v))
-        : [...prev, vehicle]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewVehicle, id?: string) {
+    try {
+      if (id) {
+        await updateVehicle(id, data)
+        toast.success("Vehicle updated")
+      } else {
+        await addVehicle(data)
+        toast.success("Vehicle added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setVehicles((prev) => prev.filter((v) => v.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteVehicle(deleteTarget.id)
+      toast.success("Vehicle removed")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -337,7 +362,9 @@ export function VehicleTable() {
       </div>
 
       {/* Content */}
-      {vehicles.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : vehicles.length === 0 ? (
         <EmptyState
           icon={Car}
           title="No vehicles yet"
@@ -381,7 +408,7 @@ export function VehicleTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -393,12 +420,13 @@ export function VehicleTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Remove
+              {isDeleting ? "Removing…" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

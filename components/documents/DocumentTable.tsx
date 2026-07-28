@@ -3,34 +3,29 @@
 /**
  * DocumentTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Document Tracker module's container component — same architecture
- * as TravellerTable/VehicleTable/ExpenseTable/FuelTable/HotelTable: owns
- * the shared list state, search, a "Needs Attention" filter, view-mode
- * toggle, and the add/edit/delete flows. DocumentCard and
- * AddDocumentDialog are both presentational/controlled and take
- * everything they need as props.
- *
- * No backend: `documents` is local React state only, starting empty.
- * This tracks vehicle documents (RC, insurance, PUC), trip permits
- * (Bhansar), and travel documents in one general list — it is not linked
- * to a specific traveller/vehicle record from those other modules; the
- * "Owner / Vehicle" field is free text, same reasoning as Vehicles'
- * "Driver Assigned" and Fuel's "Vehicle": no shared data layer exists
- * between modules yet.
+ * The Document Tracker module's container component — Firestore-backed,
+ * following the pattern proven in TravellerTable/VehicleTable/etc.
  *
  * Naming note: individual entries are called `record` (not `document`)
  * throughout this file and in DocumentCard, to avoid shadowing the global
- * `window.document` object. AddDocumentDialog is untouched, so its prop
- * is still named `document` where this file calls it — only the local
- * variable name changed here, not that external contract.
+ * `window.document` object — a deliberate fix made before this Firestore
+ * migration, preserved unchanged here. AddDocumentDialog's own prop is
+ * still named `document` (see that file's comment) — only the local
+ * variable name changed, not that contract.
+ *
+ * `fileReference` stays free text, not a real Firebase Storage upload —
+ * see the top-level note in this migration's response for why that's a
+ * deliberate scope boundary for this pass.
  */
 
 import * as React from "react"
 import { format, isValid, parseISO } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -62,37 +57,14 @@ import {
 
 import { DocumentCard } from "./DocumentCard"
 import { AddDocumentDialog } from "./AddDocumentDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type DocumentCategory =
-  | "Vehicle RC"
-  | "Vehicle Insurance"
-  | "PUC"
-  | "Travel Insurance"
-  | "Passport"
-  | "Voter ID"
-  | "Driving Licence"
-  | "Bhansar Permit"
-  | "Other"
-
-export type DocumentStatus = "Valid" | "Expiring Soon" | "Expired" | "Missing"
-
-export interface DocumentRecord {
-  id: string
-  name: string
-  category: DocumentCategory
-  /** Free text — whose document this is, or which vehicle it belongs to. */
-  ownerOrVehicle: string
-  /** ISO date string, or null if not applicable / not yet known. */
-  expiryDate: string | null
-  status: DocumentStatus
-  /** Where the physical/scanned copy actually is — free text. */
-  fileReference: string
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addDocumentRecord,
+  deleteDocumentRecord,
+  subscribeToDocumentRecords,
+  updateDocumentRecord,
+} from "@/services/documents/documents.service"
+import type { DocumentRecord, DocumentStatus, NewDocumentRecord } from "@/types/document"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -102,9 +74,9 @@ type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; record: DocumentRecord } | null
 
-/** Kept local to each file that needs it (also duplicated in DocumentCard)
- *  rather than exported, purely to avoid a value-level circular import
- *  between the sibling files for small pure functions. */
+/** Kept local to each file that needs it (also duplicated in
+ *  DocumentCard) rather than exported, purely to avoid a value-level
+ *  circular import between the sibling files for small pure functions. */
 function statusBadgeVariant(
   status: DocumentStatus
 ): "default" | "secondary" | "destructive" {
@@ -121,6 +93,20 @@ function formatDisplayDate(iso: string | null): string {
 
 function needsAttention(status: DocumentStatus): boolean {
   return status !== "Valid"
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,11 +220,29 @@ function TableView({ documents, onEdit, onDelete }: TableViewProps) {
 
 export function DocumentTable() {
   const [documents, setDocuments] = React.useState<DocumentRecord[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [attentionOnly, setAttentionOnly] = React.useState(false)
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<DocumentRecord | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToDocumentRecords(
+      (data) => {
+        setDocuments(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredDocuments = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -270,20 +274,33 @@ export function DocumentTable() {
     setDeleteTarget(record)
   }
 
-  function handleDialogSubmit(record: DocumentRecord) {
-    setDocuments((prev) => {
-      const exists = prev.some((d) => d.id === record.id)
-      return exists
-        ? prev.map((d) => (d.id === record.id ? record : d))
-        : [...prev, record]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewDocumentRecord, id?: string) {
+    try {
+      if (id) {
+        await updateDocumentRecord(id, data)
+        toast.success("Document updated")
+      } else {
+        await addDocumentRecord(data)
+        toast.success("Document added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setDocuments((prev) => prev.filter((d) => d.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteDocumentRecord(deleteTarget.id)
+      toast.success("Document removed")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -359,7 +376,9 @@ export function DocumentTable() {
       </div>
 
       {/* Content */}
-      {documents.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : documents.length === 0 ? (
         <EmptyState
           icon={FolderOpen}
           title="No documents tracked yet"
@@ -393,9 +412,9 @@ export function DocumentTable() {
       )}
 
       {/* Add / Edit dialog — fully controlled, opened from the button above
-          or from any row/card's Edit action. AddDocumentDialog is untouched,
-          so its prop is still named `document` here — only the local
-          `dialogState.record` field name changed. */}
+          or from any row/card's Edit action. AddDocumentDialog's own prop
+          is still named `document` (its external contract, unchanged) —
+          only this file's local `dialogState.record` field is renamed. */}
       <AddDocumentDialog
         open={dialogState !== null}
         onOpenChange={(isOpen) => {
@@ -409,7 +428,7 @@ export function DocumentTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -422,12 +441,13 @@ export function DocumentTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

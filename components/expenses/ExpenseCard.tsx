@@ -4,7 +4,9 @@
  * ExpenseCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single expense — used by ExpenseTable's Card
- * View.
+ * View. Shows the split type badge (Shared with a count, or Personal) and
+ * — when Shared — exactly who it applies to, so it's clear at a glance
+ * this isn't split among everyone by default.
  */
 
 import { Button } from "@/components/ui/button"
@@ -18,9 +20,9 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import { Pencil, Trash2, Calendar, Tag, User } from "lucide-react"
+import { Pencil, Trash2, Calendar, Tag, User, Paperclip } from "lucide-react"
 
-import type { Expense, ExpenseSplit, ExpenseCurrency } from "./ExpenseTable"
+import type { Expense, ExpenseCurrency } from "@/types/expense"
 
 interface ExpenseCardProps {
   expense: Expense
@@ -31,8 +33,8 @@ interface ExpenseCardProps {
 /** Kept local rather than imported — see the note in ExpenseTable's
  *  TableView about avoiding a value-level circular import for small
  *  pure functions. */
-function splitBadgeVariant(split: ExpenseSplit): "default" | "outline" {
-  return split === "Kitty" ? "default" : "outline"
+function splitBadgeVariant(splitType: Expense["splitType"]): "default" | "outline" {
+  return splitType === "Shared" ? "default" : "outline"
 }
 
 function formatAmount(amount: number, currency: ExpenseCurrency): string {
@@ -59,8 +61,10 @@ export function ExpenseCard({ expense, onEdit, onDelete }: ExpenseCardProps) {
               {formatAmount(expense.amount, expense.currency)}
             </CardDescription>
           </div>
-          <Badge variant={splitBadgeVariant(expense.split)} className="shrink-0">
-            {expense.split}
+          <Badge variant={splitBadgeVariant(expense.splitType)} className="shrink-0">
+            {expense.splitType === "Shared"
+              ? `Shared (${expense.splitAmongIds.length})`
+              : "Personal"}
           </Badge>
         </div>
       </CardHeader>
@@ -78,8 +82,26 @@ export function ExpenseCard({ expense, onEdit, onDelete }: ExpenseCardProps) {
 
         <div className="flex items-center gap-2 text-muted-foreground">
           <User className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>Paid by {expense.paidBy || "unassigned"}</span>
+          <span>Paid by {expense.paidByName || "unassigned"}</span>
         </div>
+
+        {expense.splitType === "Shared" && expense.splitAmongNames.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Split among: {expense.splitAmongNames.join(", ")}
+          </p>
+        )}
+
+        {expense.receiptUrl && (
+          <a
+            href={expense.receiptUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 text-primary underline-offset-4 hover:underline"
+          >
+            <Paperclip className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>View receipt</span>
+          </a>
+        )}
       </CardContent>
 
       <Separator />

@@ -3,11 +3,18 @@
 /**
  * AddVehicleDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single vehicle — same pattern as
- * AddTravellerDialog: no <DialogTrigger> of its own, driven entirely by
- * `open`/`vehicle` props from VehicleTable.
+ * Fully controlled Add/Edit dialog for a single vehicle — no
+ * <DialogTrigger> of its own, driven entirely by `open`/`vehicle` props
+ * from VehicleTable.
  *
- * Mode is inferred from `vehicle`: null/undefined = Add, a Vehicle = Edit.
+ * Firestore migration change: `onSubmit` now receives the form data
+ * (without an id) plus the existing id *only* when editing, instead of a
+ * full Vehicle object with a client-generated id — same contract change
+ * as AddTravellerDialog.
+ *
+ * The negative-number guard on seatingCapacity/mileage (added during the
+ * pre-backend audit, since the HTML `min` attribute alone isn't real
+ * enforcement) is preserved unchanged here.
  */
 
 import * as React from "react"
@@ -32,12 +39,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-import type { Vehicle, VehicleType, FuelType, VehicleStatus } from "./VehicleTable"
+import type {
+  Vehicle,
+  NewVehicle,
+  VehicleType,
+  FuelType,
+  VehicleStatus,
+} from "@/types/vehicle"
 
-// Local copies of the option lists — kept in this file (rather than
-// imported as values from VehicleTable) purely to avoid a value-level
-// circular import between the two sibling components. Only *types* are
-// shared across files here.
 const VEHICLE_TYPES: VehicleType[] = [
   "SUV",
   "Sedan",
@@ -57,7 +66,8 @@ interface AddVehicleDialogProps {
   onOpenChange: (open: boolean) => void
   /** Vehicle being edited, or null/undefined to add a new one. */
   vehicle?: Vehicle | null
-  onSubmit: (vehicle: Vehicle) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewVehicle, id?: string) => void
 }
 
 interface FormState {
@@ -89,8 +99,7 @@ function vehicleToForm(vehicle: Vehicle): FormState {
     name: vehicle.name,
     type: vehicle.type,
     registrationNumber: vehicle.registrationNumber,
-    seatingCapacity:
-      vehicle.seatingCapacity !== null ? String(vehicle.seatingCapacity) : "",
+    seatingCapacity: vehicle.seatingCapacity !== null ? String(vehicle.seatingCapacity) : "",
     driverAssigned: vehicle.driverAssigned,
     fuelType: vehicle.fuelType,
     mileage: vehicle.mileage !== null ? String(vehicle.mileage) : "",
@@ -99,7 +108,6 @@ function vehicleToForm(vehicle: Vehicle): FormState {
   }
 }
 
-/** Empty string → null; otherwise parse to a number (NaN also becomes null). */
 /** Empty string -> null. Negative numbers and non-numeric input also
  *  become null -- the HTML `min` attribute on these inputs is only a
  *  soft hint (some mobile keyboards and manual edits can still produce
@@ -142,8 +150,7 @@ export function AddVehicleDialog({
       return
     }
 
-    onSubmit({
-      id: vehicle?.id ?? crypto.randomUUID(),
+    const data: NewVehicle = {
       name: form.name.trim(),
       type: form.type,
       registrationNumber: form.registrationNumber.trim(),
@@ -153,7 +160,9 @@ export function AddVehicleDialog({
       mileage: parseOptionalNumber(form.mileage),
       status: form.status,
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, vehicle?.id)
   }
 
   return (

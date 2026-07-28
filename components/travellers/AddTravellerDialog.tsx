@@ -7,12 +7,24 @@
  * <DialogTrigger> of its own — TravellerTable opens it for both the
  * "Add" button and every row/card's "Edit" action.
  *
- * "Assigned Vehicle" is now a live dropdown of real Vehicles, not a fixed
- * "Car A"/"Car B" enum — same pattern as Fuel's and Tolls' vehicle
- * dropdowns. This dialog subscribes to the Vehicles collection itself
- * (read-only, just for the option list). "none" is used as the sentinel
- * value for "Unassigned" in the Select, same convention already
- * established here for the Seat Number field.
+ * "Assigned Vehicle" is a live dropdown of real Vehicles; "none" is the
+ * sentinel value for "Unassigned" in the Select.
+ *
+ * Type-safety sweep: every onValueChange handler now explicitly accounts
+ * for Base UI's Select being typed `(value: string | null) => void`
+ * (unlike Radix, which has no null). Plain-string fields (bloodGroup as
+ * a union, assignedVehicleId as a plain string) get the appropriate
+ * treatment per field; union-typed fields guard null before asserting.
+ *
+ * Seat Number specifically had a genuine *runtime* bug, not just a type
+ * gap: the original code was `value === "none" ? null : Number(value) as
+ * SeatNumber`, and `Number(null)` evaluates to `0` in JavaScript — a
+ * value that isn't a valid SeatNumber (1-5) and isn't correctly treated
+ * as "unset" either. If Base UI ever called onValueChange with an actual
+ * `null`, a traveller's seat would have silently become an invalid `0`.
+ * This compiled with zero TypeScript errors before the fix — it was
+ * invisible to the compiler, only wrong at runtime. Now `null` is
+ * checked explicitly, same as `"none"`, before any conversion happens.
  */
 
 import * as React from "react"
@@ -239,7 +251,10 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-blood-group">Blood Group</Label>
               <Select
                 value={form.bloodGroup}
-                onValueChange={(value) => updateField("bloodGroup", value as BloodGroup)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("bloodGroup", value as BloodGroup)
+                }}
               >
                 <SelectTrigger id="traveller-blood-group">
                   <SelectValue />
@@ -271,7 +286,7 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-vehicle">Assigned Vehicle</Label>
               <Select
                 value={form.assignedVehicleId}
-                onValueChange={(value) => updateField("assignedVehicleId", value)}
+                onValueChange={(value) => updateField("assignedVehicleId", value ?? "none")}
               >
                 <SelectTrigger id="traveller-vehicle">
                   <SelectValue />
@@ -291,12 +306,16 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-seat">Seat Number</Label>
               <Select
                 value={form.seatNumber ? String(form.seatNumber) : "none"}
-                onValueChange={(value) =>
-                  updateField(
-                    "seatNumber",
-                    value === "none" ? null : (Number(value) as SeatNumber)
-                  )
-                }
+                onValueChange={(value) => {
+                  // "none" and null are both treated as "unset" — see the
+                  // file header for why null must be checked explicitly
+                  // here rather than falling through to Number(value).
+                  if (value === null || value === "none") {
+                    updateField("seatNumber", null)
+                    return
+                  }
+                  updateField("seatNumber", Number(value) as SeatNumber)
+                }}
               >
                 <SelectTrigger id="traveller-seat">
                   <SelectValue />
@@ -316,9 +335,10 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-passport">Passport Status</Label>
               <Select
                 value={form.passportStatus}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("passportStatus", value as DocumentStatus)
-                }
+                }}
               >
                 <SelectTrigger id="traveller-passport">
                   <SelectValue />
@@ -337,9 +357,10 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-voter-id">Voter ID Status</Label>
               <Select
                 value={form.voterIdStatus}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("voterIdStatus", value as DocumentStatus)
-                }
+                }}
               >
                 <SelectTrigger id="traveller-voter-id">
                   <SelectValue />

@@ -7,12 +7,19 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`booking` props
  * from HotelTable.
  *
- * "Assigned Travellers" is a checkbox list, not a Select — a booking can
- * have several travellers, which a single-value dropdown can't express.
- * Reuses the same Checkbox component already used for "Parking
- * confirmed"/"Free cancellation" elsewhere in this dialog — no new
- * shadcn component needed. This dialog subscribes to the Travellers
- * collection itself (read-only, just for the checkbox options).
+ * "Assigned Travellers" is a checkbox list (a real many-to-many
+ * relationship, not a single Select) — see types/hotel.ts. This dialog
+ * subscribes to the Travellers collection itself, read-only.
+ *
+ * Type-safety sweep: every Select's onValueChange handler now guards
+ * against Base UI passing `null` before asserting to each field's
+ * literal union type (city, currency, status). See AddExpenseDialog.tsx
+ * for the full explanation. The Checkbox-based traveller list is
+ * unaffected — Checkbox's onCheckedChange has a different, unrelated
+ * signature.
+ *
+ * The negative-number guard on nights/rooms/ratePerRoom (added during
+ * the pre-backend audit) is preserved unchanged here.
  */
 
 import * as React from "react"
@@ -234,7 +241,10 @@ export function AddHotelDialog({
               <Label htmlFor="hotel-city">City</Label>
               <Select
                 value={form.city}
-                onValueChange={(value) => updateField("city", value as HotelCity)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("city", value as HotelCity)
+                }}
               >
                 <SelectTrigger id="hotel-city">
                   <SelectValue />
@@ -313,7 +323,10 @@ export function AddHotelDialog({
               <Label htmlFor="hotel-currency">Currency</Label>
               <Select
                 value={form.currency}
-                onValueChange={(value) => updateField("currency", value as HotelCurrency)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("currency", value as HotelCurrency)
+                }}
               >
                 <SelectTrigger id="hotel-currency">
                   <SelectValue />
@@ -332,7 +345,10 @@ export function AddHotelDialog({
               <Label htmlFor="hotel-status">Booking Status</Label>
               <Select
                 value={form.status}
-                onValueChange={(value) => updateField("status", value as BookingStatus)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("status", value as BookingStatus)
+                }}
               >
                 <SelectTrigger id="hotel-status">
                   <SelectValue />

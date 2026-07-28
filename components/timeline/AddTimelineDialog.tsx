@@ -7,8 +7,9 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
  * from TimelineTable.
  *
- * Firestore migration change: `onSubmit` now receives the form data
- * (without an id) plus the existing id *only* when editing.
+ * Type-safety sweep: onValueChange now guards against Base UI's Select
+ * passing `null` before asserting to the status union type. See
+ * AddExpenseDialog.tsx for the full explanation.
  *
  * The negative-number guard on day/distanceKm (added during the
  * pre-backend audit) is preserved unchanged here.
@@ -198,7 +199,10 @@ export function AddTimelineDialog({
               <Label htmlFor="timeline-status">Status</Label>
               <Select
                 value={form.status}
-                onValueChange={(value) => updateField("status", value as TimelineStatus)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("status", value as TimelineStatus)
+                }}
               >
                 <SelectTrigger id="timeline-status">
                   <SelectValue />

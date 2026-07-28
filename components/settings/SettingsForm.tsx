@@ -5,23 +5,19 @@
  * ─────────────────────────────────────────────────────────────────────────
  * Settings is a deliberate architectural exception in this codebase: a
  * singleton form for trip-wide values, not a list-based CRUD module. No
- * SettingsTable, SettingsCard, or AddSettingsDialog — just this one form
- * component, matching this project's own established convention.
+ * SettingsTable, SettingsCard, or AddSettingsDialog.
  *
- * Firestore migration: reads/writes a single fixed document (settings/
- * trip) via subscribeToTripSettings / saveTripSettings, not a collection.
+ * Firestore: reads/writes a single fixed document (settings/trip) via
+ * subscribeToTripSettings / saveTripSettings, not a collection.
  *
- * Concurrent-edit handling: the form only re-syncs its fields from a live
- * Firestore update when there are no unsaved local changes (`!isDirty`).
- * Syncing on every snapshot regardless would silently overwrite whatever
- * someone is mid-typing the instant anyone else saves anything, anywhere
- * — this isn't a modal dialog that opens fresh each time, it's always on
- * screen. While actively editing, incoming updates pause; saving still
- * uses plain last-write-wins, same as every other module in this app.
+ * Concurrent-edit handling: the form only re-syncs its fields from a
+ * live Firestore update when there are no unsaved local changes
+ * (`!isDirty`) — see the isDirtyRef below.
  *
- * `totalBudgetCollected` (new): added specifically so the Dashboard's
- * Remaining Budget card has a real number to subtract kitty spend from —
- * nothing in this schema held a total-budget figure before.
+ * Type-safety sweep: the currency Select's onValueChange now guards
+ * against Base UI's Select passing `null` before asserting to the
+ * SettingsCurrency union type. See AddExpenseDialog.tsx for the full
+ * explanation.
  */
 
 import * as React from "react"
@@ -152,14 +148,9 @@ export function SettingsForm() {
     [draft, saved]
   )
 
-  // Kept in a ref so the subscription callback (set up once, in the
-  // effect below) always reads the latest isDirty without needing to be
-  // torn down and re-subscribed every time a field changes.
   const isDirtyRef = React.useRef(isDirty)
   isDirtyRef.current = isDirty
 
-  // Real-time Firestore subscription — see the file header comment for
-  // why `draft` only re-syncs when there are no unsaved local changes.
   React.useEffect(() => {
     const unsubscribe = subscribeToTripSettings(
       (data) => {
@@ -251,9 +242,10 @@ export function SettingsForm() {
               <Label htmlFor="settings-currency">Primary Currency</Label>
               <Select
                 value={draft.currency}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("currency", value as SettingsCurrency)
-                }
+                }}
               >
                 <SelectTrigger id="settings-currency">
                   <SelectValue />

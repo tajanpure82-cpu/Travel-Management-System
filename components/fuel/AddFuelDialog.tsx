@@ -7,9 +7,14 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
  * from FuelTable.
  *
- * "Vehicle" is now a live dropdown of real Vehicles, not free text — same
- * pattern as AddExpenseDialog's "Paid By". This dialog subscribes to the
- * Vehicles collection itself (read-only, just for the option list).
+ * "Vehicle" is a live dropdown of real Vehicles. This dialog subscribes
+ * to the Vehicles collection itself (read-only, just for the option
+ * list).
+ *
+ * Type-safety sweep: onValueChange handlers now guard against Base UI's
+ * Select passing `null` before use — `vehicleId` (plain string) falls
+ * back to `""`, `currency` (union) guards null before asserting. See
+ * AddExpenseDialog.tsx for the full explanation.
  *
  * The negative-number guard on odometer (added during the pre-backend
  * audit) is preserved unchanged here.
@@ -191,7 +196,7 @@ export function AddFuelDialog({ open, onOpenChange, entry, onSubmit }: AddFuelDi
               <Label htmlFor="fuel-vehicle">Vehicle *</Label>
               <Select
                 value={form.vehicleId}
-                onValueChange={(value) => updateField("vehicleId", value)}
+                onValueChange={(value) => updateField("vehicleId", value ?? "")}
               >
                 <SelectTrigger id="fuel-vehicle">
                   <SelectValue placeholder="Select a vehicle" />
@@ -277,7 +282,10 @@ export function AddFuelDialog({ open, onOpenChange, entry, onSubmit }: AddFuelDi
               <Label htmlFor="fuel-currency">Currency</Label>
               <Select
                 value={form.currency}
-                onValueChange={(value) => updateField("currency", value as FuelCurrency)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("currency", value as FuelCurrency)
+                }}
               >
                 <SelectTrigger id="fuel-currency">
                   <SelectValue />

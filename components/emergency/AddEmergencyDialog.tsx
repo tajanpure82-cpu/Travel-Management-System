@@ -7,12 +7,12 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`contact` props
  * from EmergencyTable.
  *
- * Firestore migration change: `onSubmit` now receives the form data
- * (without an id) plus the existing id *only* when editing.
+ * Type-safety sweep: onValueChange now guards against Base UI's Select
+ * passing `null` before asserting to the category union type. See
+ * AddExpenseDialog.tsx for the full explanation.
  *
  * Validation is stricter than most modules: Name AND Phone are both
- * required — a contact without a phone number defeats the point of this
- * module. Unchanged from the original design.
+ * required — unchanged.
  */
 
 import * as React from "react"
@@ -164,9 +164,10 @@ export function AddEmergencyDialog({
               <Label htmlFor="emergency-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("category", value as EmergencyCategory)
-                }
+                }}
               >
                 <SelectTrigger id="emergency-category">
                   <SelectValue />

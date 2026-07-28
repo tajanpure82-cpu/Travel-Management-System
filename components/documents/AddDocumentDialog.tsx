@@ -7,14 +7,15 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`document` props
  * from DocumentTable.
  *
- * The prop is named `document` here deliberately (DocumentTable's own
- * internal variable is `record`, to avoid shadowing `window.document`,
- * but that's an internal detail of that file — this dialog's external
- * prop name is unchanged from before). Destructured as `document:
- * documentRecord` below so this file doesn't shadow the global either.
+ * The prop is named `document` deliberately (DocumentTable's own internal
+ * variable is `record`, to avoid shadowing `window.document`), destructured
+ * as `document: documentRecord` here so this file doesn't shadow the
+ * global either.
  *
- * Firestore migration change: `onSubmit` now receives the form data
- * (without an id) plus the existing id *only* when editing.
+ * Type-safety sweep: onValueChange handlers now guard against Base UI's
+ * Select passing `null` before asserting to each field's literal union
+ * type (category, status). See AddExpenseDialog.tsx for the full
+ * explanation.
  */
 
 import * as React from "react"
@@ -175,7 +176,10 @@ export function AddDocumentDialog({
               <Label htmlFor="document-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) => updateField("category", value as DocumentCategory)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("category", value as DocumentCategory)
+                }}
               >
                 <SelectTrigger id="document-category">
                   <SelectValue />
@@ -214,7 +218,10 @@ export function AddDocumentDialog({
               <Label htmlFor="document-status">Status</Label>
               <Select
                 value={form.status}
-                onValueChange={(value) => updateField("status", value as DocumentStatus)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("status", value as DocumentStatus)
+                }}
               >
                 <SelectTrigger id="document-status">
                   <SelectValue />

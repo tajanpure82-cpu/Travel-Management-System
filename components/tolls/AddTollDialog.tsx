@@ -7,11 +7,10 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
  * from TollTable.
  *
- * Redesigned from two fixed "Car A amount" / "Car B amount" fields into
- * one Vehicle dropdown (live, from the real Vehicles collection) + one
- * Amount field — see types/toll.ts for the reasoning. Validation is now
- * a single required amount > 0, same as Fuel and Expenses, rather than
- * "at least one of two amounts."
+ * Type-safety sweep: onValueChange handlers now guard against Base UI's
+ * Select passing `null` before use — `vehicleId` (plain string) falls
+ * back to `""`, `method` (union) guards null before asserting. See
+ * AddExpenseDialog.tsx for the full explanation.
  */
 
 import * as React from "react"
@@ -178,7 +177,7 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
               <Label htmlFor="toll-vehicle">Vehicle *</Label>
               <Select
                 value={form.vehicleId}
-                onValueChange={(value) => updateField("vehicleId", value)}
+                onValueChange={(value) => updateField("vehicleId", value ?? "")}
               >
                 <SelectTrigger id="toll-vehicle">
                   <SelectValue placeholder="Select a vehicle" />
@@ -226,7 +225,10 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
               <Label htmlFor="toll-method">Method</Label>
               <Select
                 value={form.method}
-                onValueChange={(value) => updateField("method", value as TollMethod)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("method", value as TollMethod)
+                }}
               >
                 <SelectTrigger id="toll-method">
                   <SelectValue />

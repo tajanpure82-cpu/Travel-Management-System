@@ -7,14 +7,14 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`vehicle` props
  * from VehicleTable.
  *
- * Firestore migration change: `onSubmit` now receives the form data
- * (without an id) plus the existing id *only* when editing, instead of a
- * full Vehicle object with a client-generated id — same contract change
- * as AddTravellerDialog.
+ * Type-safety sweep: every onValueChange handler now guards against
+ * Base UI's Select passing `null` (its onValueChange is typed
+ * `(value: string | null) => void`, unlike Radix) before asserting to
+ * each field's literal union type. See AddExpenseDialog.tsx and
+ * AddTravellerDialog.tsx for the full explanation — same pattern here.
  *
  * The negative-number guard on seatingCapacity/mileage (added during the
- * pre-backend audit, since the HTML `min` attribute alone isn't real
- * enforcement) is preserved unchanged here.
+ * pre-backend audit) is preserved unchanged here.
  */
 
 import * as React from "react"
@@ -110,8 +110,7 @@ function vehicleToForm(vehicle: Vehicle): FormState {
 
 /** Empty string -> null. Negative numbers and non-numeric input also
  *  become null -- the HTML `min` attribute on these inputs is only a
- *  soft hint (some mobile keyboards and manual edits can still produce
- *  a negative value), so this is the actual enforcement. */
+ *  soft hint, so this is the actual enforcement. */
 function parseOptionalNumber(value: string): number | null {
   const trimmed = value.trim()
   if (trimmed === "") return null
@@ -194,7 +193,10 @@ export function AddVehicleDialog({
               <Label htmlFor="vehicle-type">Vehicle Type</Label>
               <Select
                 value={form.type}
-                onValueChange={(value) => updateField("type", value as VehicleType)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("type", value as VehicleType)
+                }}
               >
                 <SelectTrigger id="vehicle-type">
                   <SelectValue />
@@ -246,7 +248,10 @@ export function AddVehicleDialog({
               <Label htmlFor="vehicle-fuel">Fuel Type</Label>
               <Select
                 value={form.fuelType}
-                onValueChange={(value) => updateField("fuelType", value as FuelType)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("fuelType", value as FuelType)
+                }}
               >
                 <SelectTrigger id="vehicle-fuel">
                   <SelectValue />
@@ -279,7 +284,10 @@ export function AddVehicleDialog({
               <Label htmlFor="vehicle-status">Status</Label>
               <Select
                 value={form.status}
-                onValueChange={(value) => updateField("status", value as VehicleStatus)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("status", value as VehicleStatus)
+                }}
               >
                 <SelectTrigger id="vehicle-status">
                   <SelectValue />

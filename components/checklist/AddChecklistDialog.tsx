@@ -7,11 +7,10 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`item` props from
  * ChecklistTable.
  *
- * Firestore migration change: `onSubmit` now receives the form data
- * (without an id) plus the existing id *only* when editing. Note this is
- * a *separate* path from the quick complete-toggle in ChecklistTable —
- * this dialog's own "Already completed" checkbox is for setting/
- * correcting the field alongside everything else, not the fast path.
+ * Type-safety sweep: onValueChange handlers now guard against Base UI's
+ * Select passing `null` before asserting to each field's literal union
+ * type (category, priority). See AddExpenseDialog.tsx for the full
+ * explanation.
  */
 
 import * as React from "react"
@@ -162,9 +161,10 @@ export function AddChecklistDialog({
               <Label htmlFor="checklist-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("category", value as ChecklistCategory)
-                }
+                }}
               >
                 <SelectTrigger id="checklist-category">
                   <SelectValue />
@@ -183,9 +183,10 @@ export function AddChecklistDialog({
               <Label htmlFor="checklist-priority">Priority</Label>
               <Select
                 value={form.priority}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("priority", value as ChecklistPriority)
-                }
+                }}
               >
                 <SelectTrigger id="checklist-priority">
                   <SelectValue />

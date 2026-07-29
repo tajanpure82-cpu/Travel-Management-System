@@ -7,10 +7,11 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
  * from TollTable.
  *
- * Type-safety sweep: onValueChange handlers now guard against Base UI's
- * Select passing `null` before use — `vehicleId` (plain string) falls
- * back to `""`, `method` (union) guards null before asserting. See
- * AddExpenseDialog.tsx for the full explanation.
+ * Legacy-data fix: `entryToForm` now defaults `vehicleId` to `""` if
+ * missing — a toll entry created before the "one entry, one vehicle"
+ * redesign (or before that field existed at all) has this genuinely
+ * undefined, not just empty. Same class of gap fixed in
+ * AddFuelDialog.tsx, AddExpenseDialog.tsx, and AddHotelDialog.tsx.
  */
 
 import * as React from "react"
@@ -78,7 +79,7 @@ function entryToForm(entry: TollEntry): FormState {
   return {
     date: entry.date,
     section: entry.section,
-    vehicleId: entry.vehicleId,
+    vehicleId: entry.vehicleId ?? "",
     amount: String(entry.amount),
     method: entry.method,
     notes: entry.notes,

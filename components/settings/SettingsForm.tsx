@@ -4,8 +4,7 @@
  * SettingsForm
  * ─────────────────────────────────────────────────────────────────────────
  * Settings is a deliberate architectural exception in this codebase: a
- * singleton form for trip-wide values, not a list-based CRUD module. No
- * SettingsTable, SettingsCard, or AddSettingsDialog.
+ * singleton form for trip-wide values, not a list-based CRUD module.
  *
  * Firestore: reads/writes a single fixed document (settings/trip) via
  * subscribeToTripSettings / saveTripSettings, not a collection.
@@ -14,10 +13,15 @@
  * live Firestore update when there are no unsaved local changes
  * (`!isDirty`) — see the isDirtyRef below.
  *
- * Type-safety sweep: the currency Select's onValueChange now guards
- * against Base UI's Select passing `null` before asserting to the
- * SettingsCurrency union type. See AddExpenseDialog.tsx for the full
- * explanation.
+ * Legacy-data fix: `settingsToDraft` previously checked
+ * `settings.totalBudgetCollected !== null` to decide whether to show a
+ * blank input or the stored number. But `!==` only catches an explicit
+ * `null` — a Settings document saved *before* `totalBudgetCollected`
+ * existed has this field genuinely `undefined`, which passes that check
+ * and then does `String(undefined)`, literally showing the text
+ * "undefined" in the input. Switched to `!= null` (loose equality),
+ * which correctly treats both `null` and `undefined` as "not set" —
+ * applied to both optional-number fields for the same reason.
  */
 
 import * as React from "react"
@@ -71,6 +75,10 @@ interface DraftState {
   notes: string
 }
 
+/** `!= null` (loose) rather than `!== null` (strict) — deliberately
+ *  catches both `null` and a genuinely missing (`undefined`) field, so
+ *  a Settings document saved before a field existed shows a blank input
+ *  instead of the literal text "undefined". */
 function settingsToDraft(settings: TripSettings): DraftState {
   return {
     tripName: settings.tripName,
@@ -78,9 +86,9 @@ function settingsToDraft(settings: TripSettings): DraftState {
     endDate: settings.endDate,
     currency: settings.currency,
     emergencyFundAmount:
-      settings.emergencyFundAmount !== null ? String(settings.emergencyFundAmount) : "",
+      settings.emergencyFundAmount != null ? String(settings.emergencyFundAmount) : "",
     totalBudgetCollected:
-      settings.totalBudgetCollected !== null ? String(settings.totalBudgetCollected) : "",
+      settings.totalBudgetCollected != null ? String(settings.totalBudgetCollected) : "",
     notes: settings.notes,
   }
 }

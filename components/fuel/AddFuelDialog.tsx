@@ -11,10 +11,13 @@
  * to the Vehicles collection itself (read-only, just for the option
  * list).
  *
- * Type-safety sweep: onValueChange handlers now guard against Base UI's
- * Select passing `null` before use — `vehicleId` (plain string) falls
- * back to `""`, `currency` (union) guards null before asserting. See
- * AddExpenseDialog.tsx for the full explanation.
+ * Legacy-data fix: `entryToForm` now defaults `vehicleId` to `""` if
+ * missing — a fuel entry created before `vehicle` was renamed to
+ * `vehicleId`/`vehicleName` has this field genuinely undefined, not
+ * just empty. This doesn't crash (a Select with an unmatched value just
+ * shows nothing selected), but it's still wrong to leave un-guarded —
+ * the same class of gap that crashed AddExpenseDialog.tsx and
+ * AddHotelDialog.tsx elsewhere in this app.
  *
  * The negative-number guard on odometer (added during the pre-backend
  * audit) is preserved unchanged here.
@@ -91,7 +94,7 @@ function emptyForm(): FormState {
 function entryToForm(entry: FuelEntry): FormState {
   return {
     date: entry.date,
-    vehicleId: entry.vehicleId,
+    vehicleId: entry.vehicleId ?? "",
     location: entry.location,
     odometer: entry.odometer !== null ? String(entry.odometer) : "",
     litres: String(entry.litres),

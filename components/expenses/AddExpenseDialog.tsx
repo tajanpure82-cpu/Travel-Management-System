@@ -11,22 +11,25 @@
  * checkbox list of exactly who this expense applies to — not an
  * all-or-nothing toggle.
  *
- * Build-fix note: Base UI's Select `onValueChange` is typed as
- * `(value: string | null) => void` — unlike Radix, which is
- * `(value: string) => void`. Every onValueChange handler in this file
- * accounts for that explicitly now:
- *   - `paidById` is a plain `string` field — `value ?? ""` produces an
- *     honest `string` with no assertion needed at all.
- *   - `category`/`currency`/`splitType` are string-literal unions.
- *     TypeScript can't statically narrow a generic string to a literal
- *     union without either a runtime check or an assertion, so each
- *     handler guards against `null` first, then asserts only the
- *     guaranteed-non-null remainder — narrowing a real `string`, not
- *     masking a `string | null` the way an unguarded `as X` would.
- *   `updateField` itself needed no changes — it was already correctly
- *   generic (`FormState[K]`); the mismatch was only ever at these call
- *   sites, where Base UI's wider callback type met FormState's stricter
- *   per-field types.
+ * Legacy-data fix: this dialog previously crashed
+ * ("Cannot read properties of undefined (reading 'includes')") when
+ * editing an expense created *before* the Settlement feature added
+ * `splitAmongIds`/`splitType` to the schema. Those older Firestore
+ * documents genuinely don't have those fields — not an empty array,
+ * missing entirely — so calling `.includes()` on `form.splitAmongIds`
+ * threw. `expenseToForm` now defaults `splitAmongIds` to `[]` and infers
+ * `splitType` when it's missing, checking whether the even-older retired
+ * `split: "Kitty" | "Personal"` field is still sitting in the raw
+ * document (it's not in the current type, hence the explicit cast — this
+ * is exactly the case a type assertion is for: reading real-world data
+ * whose shape predates the current type definition).
+ *
+ * On top of that: if a legacy record infers as "Shared" but has no
+ * participant list at all, the re-seed effect below pre-checks every
+ * *currently known* traveller — approximating what "Kitty" always meant
+ * (shared with the whole group) rather than leaving the checklist empty
+ * and forcing a manual re-select of people who were always meant to be
+ * included.
  */
 
 import * as React from "react"
@@ -119,16 +122,32 @@ function emptyForm(): FormState {
   }
 }
 
+/**
+ * Converts a stored Expense back into form state. Defends against
+ * documents created before the current schema:
+ *   - `splitAmongIds` defaults to `[]` if missing (was undefined, not an
+ *     empty array, on any record predating the Settlement feature).
+ *   - `splitType` is inferred from the retired `split` field if the
+ *     current `splitType` field is missing — an old "Kitty" value maps
+ *     to "Shared" (its closest real equivalent), anything else to
+ *     "Personal". The cast is deliberate: `split` genuinely isn't part
+ *     of the current Expense type, but may still exist in real,
+ *     already-saved documents.
+ */
 function expenseToForm(expense: Expense): FormState {
+  const legacySplit = (expense as unknown as { split?: string }).split
+  const inferredSplitType: ExpenseSplitType =
+    expense.splitType ?? (legacySplit === "Kitty" ? "Shared" : "Personal")
+
   return {
     date: expense.date,
     category: expense.category,
     description: expense.description,
     amount: String(expense.amount),
     currency: expense.currency,
-    paidById: expense.paidById,
-    splitType: expense.splitType,
-    splitAmongIds: expense.splitAmongIds,
+    paidById: expense.paidById ?? "",
+    splitType: inferredSplitType,
+    splitAmongIds: expense.splitAmongIds ?? [],
   }
 }
 
@@ -147,6 +166,11 @@ export function AddExpenseDialog({
   const [isSubmitting, setIsSubmitting] = React.useState(false)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
+  // Read in the re-seed effect below via a ref, not a dependency — see
+  // that effect's comment for why.
+  const travellersRef = React.useRef<Traveller[]>([])
+  travellersRef.current = travellers
+
   // Read-only subscription — feeds both the "Paid By" dropdown and the
   // "Split Among" checklist. This dialog never writes to Travellers.
   React.useEffect(() => {
@@ -155,10 +179,28 @@ export function AddExpenseDialog({
   }, [])
 
   // Re-seed the form every time the dialog opens, matching whichever
-  // expense (if any) it was opened for.
+  // expense (if any) it was opened for. Deliberately depends on
+  // [open, expense] only, not `travellers` — re-running this on every
+  // travellers snapshot would wipe in-progress edits any time the
+  // read-only subscription fires, which is disruptive and unnecessary;
+  // travellersRef.current gives this effect the latest list without
+  // needing it in the dependency array.
   React.useEffect(() => {
     if (!open) return
-    setForm(expense ? expenseToForm(expense) : emptyForm())
+
+    if (!expense) {
+      setForm(emptyForm())
+    } else {
+      const baseForm = expenseToForm(expense)
+      const isLegacySharedWithNoParticipants =
+        baseForm.splitType === "Shared" && baseForm.splitAmongIds.length === 0
+      setForm(
+        isLegacySharedWithNoParticipants
+          ? { ...baseForm, splitAmongIds: travellersRef.current.map((t) => t.id) }
+          : baseForm
+      )
+    }
+
     setError(null)
     setSelectedFile(null)
     setRemoveExistingReceipt(false)

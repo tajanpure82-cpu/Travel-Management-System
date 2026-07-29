@@ -11,12 +11,12 @@
  * relationship, not a single Select) — see types/hotel.ts. This dialog
  * subscribes to the Travellers collection itself, read-only.
  *
- * Type-safety sweep: every Select's onValueChange handler now guards
- * against Base UI passing `null` before asserting to each field's
- * literal union type (city, currency, status). See AddExpenseDialog.tsx
- * for the full explanation. The Checkbox-based traveller list is
- * unaffected — Checkbox's onCheckedChange has a different, unrelated
- * signature.
+ * Legacy-data fix: `bookingToForm` previously called
+ * `booking.assignedTravellers.map(...)` directly — any hotel booking
+ * created before this relationship existed has no `assignedTravellers`
+ * field at all (undefined, not an empty array), which would crash the
+ * same way AddExpenseDialog.tsx did on its own legacy-data gap. Now
+ * defaults to `[]` if missing.
  *
  * The negative-number guard on nights/rooms/ratePerRoom (added during
  * the pre-backend audit) is preserved unchanged here.
@@ -121,6 +121,10 @@ function emptyForm(): FormState {
   }
 }
 
+/** Defaults `assignedTravellerIds` to `[]` if the stored booking predates
+ *  this relationship entirely — an old record has this field genuinely
+ *  missing (undefined), not an empty array, and `.map()` on undefined
+ *  throws. */
 function bookingToForm(booking: HotelBooking): FormState {
   return {
     city: booking.city,
@@ -134,7 +138,7 @@ function bookingToForm(booking: HotelBooking): FormState {
     freeCancellation: booking.freeCancellation,
     status: booking.status,
     contactPhone: booking.contactPhone,
-    assignedTravellerIds: booking.assignedTravellers.map((t) => t.travellerId),
+    assignedTravellerIds: (booking.assignedTravellers ?? []).map((t) => t.travellerId),
     notes: booking.notes,
   }
 }

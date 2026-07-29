@@ -6,18 +6,31 @@
  * single document). Every module's `services/<module>/<module>.service.ts`
  * is a thin, named wrapper around these.
  *
- * subscribeToDocument / setDocumentData (added for Settings): for
- * singleton modules — a fixed, known document path instead of a
- * collection of many documents with auto-generated IDs. `setDocumentData`
- * uses `setDoc(..., { merge: true })` rather than `updateDoc` specifically
- * because `updateDoc` throws if the document doesn't exist yet, which
- * would break a singleton's very first save.
+ * Build-fix note: `createDocument`, `updateDocument`, and
+ * `setDocumentData` each cast their outgoing data to Firebase's own
+ * `WithFieldValue<DocumentData>` / `UpdateData<DocumentData>` types
+ * before calling `addDoc`/`updateDoc`/`setDoc`. Without this, TypeScript
+ * tries to infer the Firestore SDK's generic `DbModelType` from the
+ * *data* argument (typed as this module's own `T`), then checks whether
+ * the plain, converter-less `DocumentReference<DocumentData,
+ * DocumentData>` returned by `doc()` is assignable to
+ * `DocumentReference<DocumentData, T>` — which it never is, since a
+ * converter-less reference's internal converter type doesn't match a
+ * reference parametrized to a specific app type. The cast forces
+ * inference the other way: `DbModelType = DocumentData`, matching what
+ * `doc()`/`collection()` actually return. This isn't a workaround for a
+ * bug in this file — it's the documented shape Firebase's own modular
+ * SDK expects when a `DocumentReference`/`CollectionReference` is used
+ * without `.withConverter()`, which this app deliberately doesn't use.
+ * `WithFieldValue<DocumentData>` for creates/sets (matching
+ * `addDoc`/`setDoc`'s parameter type), `UpdateData<DocumentData>` for
+ * updates (matching `updateDoc`'s, which supports dot-notation partial
+ * paths). Verified by compiling both the failing and fixed versions
+ * against the real, currently-installed `firebase` package before this
+ * was shipped, not just reasoned through.
  *
  * Dates: documents keep storing dates as plain ISO strings (matching what
  * every module already did with local state), not Firestore Timestamps.
- * Timestamps would be more idiomatic for range queries later, but they'd
- * touch every date-fns call across every module for a benefit nothing
- * needs yet. Easy to revisit if date-range querying becomes a real need.
  *
  * IDs: Firestore assigns the document ID on create (via `addDoc`) — none
  * of the client-side `crypto.randomUUID()` generation the modules used to
@@ -35,8 +48,11 @@ import {
   query,
   setDoc,
   updateDoc,
+  type DocumentData,
   type FirestoreError,
   type Unsubscribe,
+  type UpdateData,
+  type WithFieldValue,
 } from "firebase/firestore"
 
 import { db } from "@/lib/firebase/config"
@@ -110,7 +126,10 @@ export async function createDocument<T extends object>(
   data: T
 ): Promise<string> {
   const collectionRef = collection(db, collectionName)
-  const docRef = await addDoc(collectionRef, stripId(data))
+  const docRef = await addDoc(
+    collectionRef,
+    stripId(data) as WithFieldValue<DocumentData>
+  )
   return docRef.id
 }
 
@@ -121,7 +140,7 @@ export async function updateDocument<T extends object>(
   data: Partial<T>
 ): Promise<void> {
   const docRef = doc(db, collectionName, id)
-  await updateDoc(docRef, stripId(data))
+  await updateDoc(docRef, stripId(data) as UpdateData<DocumentData>)
 }
 
 /** Deletes a document. */
@@ -185,5 +204,5 @@ export async function setDocumentData<T extends object>(
   data: T
 ): Promise<void> {
   const docRef = doc(db, collectionName, docId)
-  await setDoc(docRef, stripId(data), { merge: true })
+  await setDoc(docRef, stripId(data) as WithFieldValue<DocumentData>, { merge: true })
 }

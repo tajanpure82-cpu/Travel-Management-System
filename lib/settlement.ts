@@ -2,26 +2,31 @@
  * settlement
  * ─────────────────────────────────────────────────────────────────────────
  * Pure calculation logic for splitting group expenses — no Firestore, no
- * UI, just the math. Kept separate from ExpenseTable.tsx so it's
- * independently readable and (if this project ever adds tests) testable
- * on its own.
+ * UI, just the math.
  *
- * Two functions:
- *   computeBalances    — for each person: what they paid, what their
- *                         fair share of everything they were part of
- *                         came to, and the difference (net balance).
- *   computeSettlements — turns those net balances into the minimum
- *                         number of actual payments needed to settle
- *                         everyone up. Same greedy debt-simplification
- *                         approach real settle-up apps use: the biggest
- *                         debtor pays the biggest creditor first, repeat.
+ * Three functions:
+ *   computeBalances       — for each person: what they paid, what their
+ *                            fair share of everything they were part of
+ *                            came to, and the difference (net balance).
+ *   computeSettlements    — turns those net balances into the minimum
+ *                            number of actual payments needed to settle
+ *                            everyone up. Same greedy debt-simplification
+ *                            approach real settle-up apps use.
+ *   computeNetSettlements — subtracts any *recorded* payments (see
+ *                           types/settlementPayment.ts) from the
+ *                           suggested settlement, so a payment that's
+ *                           actually been made stops being suggested
+ *                           again. This is what turns "the app calculates
+ *                           a suggestion" into "the app remembers what's
+ *                           already settled."
  *
- * Both operate on one currency at a time — currencies are never blended,
- * same rule as everywhere else in this app. Personal expenses never
- * factor in here at all; they're not shared costs.
+ * All three operate on one currency at a time — currencies are never
+ * blended, same rule as everywhere else in this app. Personal expenses
+ * never factor in here at all; they're not shared costs.
  */
 
 import type { Expense, ExpenseCurrency } from "@/types/expense"
+import type { SettlementPayment } from "@/types/settlementPayment"
 
 export interface PersonBalance {
   travellerId: string
@@ -124,4 +129,37 @@ export function computeSettlements(balances: PersonBalance[]): SettlementTransac
   }
 
   return transactions
+}
+
+/**
+ * Subtracts recorded payments from the suggested settlement, matched by
+ * exact fromId/toId/currency. A suggested transaction fully covered by
+ * recorded payments is dropped entirely; a partially-covered one shows
+ * only the remainder. Overpayment (someone recorded paying more than the
+ * suggested amount) floors at zero here rather than flipping into a
+ * reverse debt — a rare edge case, not worth the added complexity this
+ * pass.
+ */
+export function computeNetSettlements(
+  suggestedSettlements: SettlementTransaction[],
+  recordedPayments: SettlementPayment[],
+  currency: ExpenseCurrency
+): SettlementTransaction[] {
+  return suggestedSettlements
+    .map((transaction) => {
+      const paidSoFar = recordedPayments
+        .filter(
+          (payment) =>
+            payment.fromId === transaction.fromId &&
+            payment.toId === transaction.toId &&
+            payment.currency === currency
+        )
+        .reduce((sum, payment) => sum + payment.amount, 0)
+
+      return {
+        ...transaction,
+        amount: Math.max(0, transaction.amount - paidSoFar),
+      }
+    })
+    .filter((transaction) => transaction.amount > SETTLED_THRESHOLD)
 }

@@ -5,11 +5,14 @@
  * ─────────────────────────────────────────────────────────────────────────
  * The Expense Management module's container component — Firestore-backed.
  *
- * Print added specifically for the Settlement section — a physical
- * printout of "who pays whom" is a reasonable thing to want at the end of
- * the trip, as a record everyone can see and agree on. The Settlement
- * cards themselves stay visible when printing; search, the Shared-only
- * filter, view toggle, and every row's Edit/Delete are print:hidden.
+ * Settlement section now shows the *net remaining* amount after
+ * subtracting recorded payments — a "Mark as Paid" button on each
+ * suggested settlement records that payment (via
+ * services/settlements/settlements.service.ts), and the row disappears
+ * or shrinks to a remainder the next time this re-renders (which is
+ * immediate, since payments are subscribed to in real time same as
+ * everything else). A "Settled" history list shows what's already been
+ * recorded, for an audit trail everyone can see.
  */
 
 import * as React from "react"
@@ -50,6 +53,7 @@ import {
   Paperclip,
   Scale,
   ArrowRight,
+  CheckCircle2,
   type LucideIcon,
 } from "lucide-react"
 
@@ -57,14 +61,19 @@ import { ExpenseCard } from "./ExpenseCard"
 import { AddExpenseDialog } from "./AddExpenseDialog"
 import { getErrorMessage } from "@/lib/firebase/errors"
 import { deleteFileByUrl } from "@/lib/firebase/storage"
-import { computeBalances, computeSettlements } from "@/lib/settlement"
+import { computeBalances, computeNetSettlements, computeSettlements } from "@/lib/settlement"
 import {
   addExpense,
   deleteExpense,
   subscribeToExpenses,
   updateExpense,
 } from "@/services/expenses/expenses.service"
+import {
+  recordSettlementPayment,
+  subscribeToSettlementPayments,
+} from "@/services/settlements/settlements.service"
 import type { Expense, ExpenseCurrency, NewExpense } from "@/types/expense"
+import type { SettlementPayment } from "@/types/settlementPayment"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -109,15 +118,35 @@ function LoadingState() {
 
 interface SettlementSectionProps {
   expenses: Expense[]
+  payments: SettlementPayment[]
   currency: ExpenseCurrency
+  onMarkPaid: (fromId: string, fromName: string, toId: string, toName: string, amount: number, currency: ExpenseCurrency) => void
+  markingPaidKey: string | null
 }
 
-function SettlementSection({ expenses, currency }: SettlementSectionProps) {
+function SettlementSection({
+  expenses,
+  payments,
+  currency,
+  onMarkPaid,
+  markingPaidKey,
+}: SettlementSectionProps) {
   const balances = React.useMemo(
     () => computeBalances(expenses, currency),
     [expenses, currency]
   )
-  const settlements = React.useMemo(() => computeSettlements(balances), [balances])
+  const suggestedSettlements = React.useMemo(
+    () => computeSettlements(balances),
+    [balances]
+  )
+  const netSettlements = React.useMemo(
+    () => computeNetSettlements(suggestedSettlements, payments, currency),
+    [suggestedSettlements, payments, currency]
+  )
+  const settledHistory = React.useMemo(
+    () => payments.filter((p) => p.currency === currency),
+    [payments, currency]
+  )
 
   if (balances.length === 0) return null
 
@@ -165,20 +194,73 @@ function SettlementSection({ expenses, currency }: SettlementSectionProps) {
           ))}
         </div>
 
-        {/* Concrete "who pays whom" instructions */}
-        {settlements.length > 0 && (
+        {/* Concrete "who pays whom" instructions — net of anything already
+            recorded as paid. */}
+        {netSettlements.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3">
             <p className="text-xs font-medium text-muted-foreground">To settle up:</p>
-            {settlements.map((transaction, index) => (
+            {netSettlements.map((transaction) => {
+              const key = `${transaction.fromId}-${transaction.toId}`
+              const isMarking = markingPaidKey === key
+              return (
+                <div
+                  key={key}
+                  className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm"
+                >
+                  <span className="font-medium">{transaction.fromName}</span>
+                  <ArrowRight
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="font-medium">{transaction.toName}</span>
+                  <span className="ml-auto font-semibold">
+                    {formatAmount(transaction.amount, currency)}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 print:hidden"
+                    disabled={isMarking}
+                    onClick={() =>
+                      onMarkPaid(
+                        transaction.fromId,
+                        transaction.fromName,
+                        transaction.toId,
+                        transaction.toName,
+                        transaction.amount,
+                        currency
+                      )
+                    }
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    {isMarking ? "Marking…" : "Mark as Paid"}
+                  </Button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Settled history — an audit trail of what's already been recorded */}
+        {settledHistory.length > 0 && (
+          <div className="space-y-2 border-t border-border pt-3">
+            <p className="text-xs font-medium text-muted-foreground">
+              Already settled ({currency}):
+            </p>
+            {settledHistory.map((payment) => (
               <div
-                key={index}
-                className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm"
+                key={payment.id}
+                className="flex items-center gap-2 text-xs text-muted-foreground"
               >
-                <span className="font-medium">{transaction.fromName}</span>
-                <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                <span className="font-medium">{transaction.toName}</span>
-                <span className="ml-auto font-semibold">
-                  {formatAmount(transaction.amount, currency)}
+                <CheckCircle2
+                  className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+                  aria-hidden="true"
+                />
+                <span>
+                  {payment.fromName} → {payment.toName}: {formatAmount(payment.amount, currency)}
+                  {" · "}
+                  {payment.settledAt}
                 </span>
               </div>
             ))}
@@ -319,6 +401,7 @@ function TableView({ expenses, onEdit, onDelete }: TableViewProps) {
 
 export function ExpenseTable() {
   const [expenses, setExpenses] = React.useState<Expense[]>([])
+  const [payments, setPayments] = React.useState<SettlementPayment[]>([])
   const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
@@ -326,6 +409,7 @@ export function ExpenseTable() {
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<Expense | null>(null)
   const [isDeleting, setIsDeleting] = React.useState(false)
+  const [markingPaidKey, setMarkingPaidKey] = React.useState<string | null>(null)
 
   // Real-time Firestore subscription — fires immediately with the current
   // data, then again on every add/edit/delete from any browser/device.
@@ -339,6 +423,17 @@ export function ExpenseTable() {
         toast.error(getErrorMessage(error))
         setLoading(false)
       }
+    )
+    return unsubscribe
+  }, [])
+
+  // Real-time Firestore subscription for recorded settlement payments —
+  // separate collection, feeds the "net remaining" calculation and the
+  // settled history list.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToSettlementPayments(
+      (data) => setPayments(data),
+      (error) => toast.error(getErrorMessage(error))
     )
     return unsubscribe
   }, [])
@@ -412,6 +507,35 @@ export function ExpenseTable() {
     }
   }
 
+  async function handleMarkPaid(
+    fromId: string,
+    fromName: string,
+    toId: string,
+    toName: string,
+    amount: number,
+    currency: ExpenseCurrency
+  ) {
+    const key = `${fromId}-${toId}`
+    setMarkingPaidKey(key)
+    try {
+      await recordSettlementPayment({
+        fromId,
+        fromName,
+        toId,
+        toName,
+        amount,
+        currency,
+        settledAt: new Date().toISOString().slice(0, 10),
+        notes: "",
+      })
+      toast.success(`Marked ${fromName} → ${toName} as paid`)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setMarkingPaidKey(null)
+    }
+  }
+
   const totalsSummary =
     sharedTotals.npr > 0
       ? `${formatAmount(sharedTotals.inr, "INR")} + ${formatAmount(sharedTotals.npr, "NPR")} shared`
@@ -428,12 +552,25 @@ export function ExpenseTable() {
       </div>
 
       {/* Settlement — one block per currency that actually has shared spend.
-          Stays visible when printing; this is the whole point of the Print
-          button on this page. */}
+          Stays visible when printing. */}
       {!loading && (
         <>
-          <SettlementSection expenses={expenses} currency="INR" />
-          {sharedTotals.npr > 0 && <SettlementSection expenses={expenses} currency="NPR" />}
+          <SettlementSection
+            expenses={expenses}
+            payments={payments}
+            currency="INR"
+            onMarkPaid={handleMarkPaid}
+            markingPaidKey={markingPaidKey}
+          />
+          {sharedTotals.npr > 0 && (
+            <SettlementSection
+              expenses={expenses}
+              payments={payments}
+              currency="NPR"
+              onMarkPaid={handleMarkPaid}
+              markingPaidKey={markingPaidKey}
+            />
+          )}
         </>
       )}
 

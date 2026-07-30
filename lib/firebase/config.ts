@@ -10,11 +10,38 @@
  * This file is safe to import from Client Components only ("use client"
  * files, or files imported exclusively by them). Firebase's JS SDK expects
  * a browser environment for Auth persistence and real-time listeners.
+ *
+ * Offline persistence (added): Firestore, unlike Firebase's native mobile
+ * SDKs, does NOT cache data locally by default on the web — without this,
+ * losing signal meant every page needed a live connection to show
+ * anything at all, and any add/edit would just fail outright. Given this
+ * trip goes through the Himalayas and Nepal, where signal will genuinely
+ * be patchy for real stretches, that's a meaningful gap to close.
+ *
+ * `persistentLocalCache` turns on IndexedDB-backed local storage of
+ * whatever's already been read, so a page that was viewed with signal
+ * keeps showing that data with none. `persistentMultipleTabManager` is
+ * included so this still works correctly if someone has the app open in
+ * more than one browser tab at once — without it, only the first tab
+ * opened would get persistence, and others would silently fall back to
+ * memory-only caching.
+ *
+ * This does NOT make writes work with zero connection forever — an
+ * add/edit made offline is queued locally and sent automatically the
+ * moment connectivity returns, which is exactly the useful case (jot
+ * something down in a signal gap, it saves for real once back in range)
+ * rather than a promise of indefinite offline editing.
  */
 
 import { getApps, initializeApp, type FirebaseOptions } from "firebase/app"
 import { getAuth } from "firebase/auth"
-import { getFirestore } from "firebase/firestore"
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  type Firestore,
+} from "firebase/firestore"
 import { getStorage } from "firebase/storage"
 
 const firebaseConfig: FirebaseOptions = {
@@ -43,5 +70,25 @@ export const firebaseApp = getApps().length
   : initializeApp(firebaseConfig)
 
 export const auth = getAuth(firebaseApp)
-export const db = getFirestore(firebaseApp)
+
+// Guarded the same way as `firebaseApp` above, for the same reason:
+// Next.js's dev-mode Fast Refresh can re-run this module against an
+// *already-initialized* app. `initializeFirestore` throws if called
+// twice for one app — even with identical settings — so this falls
+// back to `getFirestore()` (which just returns the existing instance)
+// rather than crashing on every hot-reload during local development.
+function initializeDb(): Firestore {
+  try {
+    return initializeFirestore(firebaseApp, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    })
+  } catch {
+    return getFirestore(firebaseApp)
+  }
+}
+
+export const db = initializeDb()
+
 export const storage = getStorage(firebaseApp)

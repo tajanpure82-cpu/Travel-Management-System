@@ -1,0 +1,26 @@
+/**
+ * Print-specific styles.
+ * ─────────────────────────────────────────────────────────────────────────
+ * Kept in its own file rather than folded into globals.css, so this can
+ * be added without touching (or needing to know the exact current
+ * contents of) that file. Most visibility control — hiding the sidebar,
+ * toolbars, search boxes, and per-row action buttons — is done with
+ * Tailwind's built-in `print:hidden` utility class applied directly in
+ * each component; this file only holds the couple of things Tailwind
+ * utilities don't cleanly cover.
+ */
+
+@media print {
+  /* Paper, not the app's dark theme, regardless of what the user's
+     current color mode is set to. */
+  html,
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Avoid a table row getting cut awkwardly across a page break. */
+  tr {
+    break-inside: avoid;
+  }
+}

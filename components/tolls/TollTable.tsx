@@ -3,25 +3,26 @@
 /**
  * TollTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Toll Log module's container component — same architecture as
- * FuelTable/HotelTable/etc: owns the shared list state, search, view-mode
- * toggle, and the add/edit/delete flows. TollCard and AddTollDialog are
- * both presentational/controlled and take everything they need as props.
+ * The Toll Log module's container component — Firestore-backed.
  *
- * No backend: `entries` is local React state only, starting empty.
+ * Redesigned from two fixed "Car A" / "Car B" columns into a single
+ * Vehicle + Amount per entry — see types/toll.ts for the full reasoning.
+ * This file adds the Per-Vehicle Toll Summary section, same shape as
+ * Fuel's Fuel Cost by Vehicle.
  *
- * Fields (Date, Section, Car A amount, Car B amount, Method, Notes) mirror
- * this project's own Toll Log structure rather than an invented shape.
- * Single currency (INR) only — Nepal has no tolls on this route, so a
- * dual-currency split like Expenses/Fuel/Hotels isn't needed here.
+ * Single currency (INR) only — unchanged, Nepal has no tolls on this
+ * route.
  */
 
 import * as React from "react"
 import { format, isValid, parseISO } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Table,
   TableBody,
@@ -48,29 +49,20 @@ import {
   Pencil,
   Trash2,
   Route as RouteIcon,
+  Car,
   type LucideIcon,
 } from "lucide-react"
 
 import { TollCard } from "./TollCard"
 import { AddTollDialog } from "./AddTollDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type TollMethod = "FASTag" | "Cash"
-
-export interface TollEntry {
-  id: string
-  /** ISO date string, e.g. "2026-08-01". */
-  date: string
-  /** e.g. "Samruddhi Mahamarg (full)", "Nagpur -> Raipur". */
-  section: string
-  carAAmount: number
-  carBAmount: number
-  method: TollMethod
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addToll,
+  deleteToll,
+  subscribeToTolls,
+  updateToll,
+} from "@/services/tolls/tolls.service"
+import type { NewTollEntry, TollEntry } from "@/types/toll"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -94,9 +86,58 @@ function formatInr(amount: number): string {
   }).format(amount)
 }
 
-/** Total for one entry — both cars combined. */
-function entryTotal(entry: TollEntry): number {
-  return entry.carAAmount + entry.carBAmount
+interface VehicleTotal {
+  vehicleId: string
+  vehicleName: string
+  amount: number
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            Per-vehicle summary                            */
+/* -------------------------------------------------------------------------- */
+
+interface PerVehicleSummaryProps {
+  totals: VehicleTotal[]
+}
+
+function PerVehicleSummary({ totals }: PerVehicleSummaryProps) {
+  if (totals.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <Car className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <CardTitle className="text-sm font-medium">Toll Cost by Vehicle</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {totals.map((vehicle) => (
+          <div
+            key={vehicle.vehicleId}
+            className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm"
+          >
+            <span className="font-medium">{vehicle.vehicleName}</span>
+            <span className="text-muted-foreground">{formatInr(vehicle.amount)}</span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -149,9 +190,8 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
           <TableRow>
             <TableHead>Date</TableHead>
             <TableHead>Section</TableHead>
-            <TableHead>Car A</TableHead>
-            <TableHead>Car B</TableHead>
-            <TableHead>Total</TableHead>
+            <TableHead>Vehicle</TableHead>
+            <TableHead>Amount</TableHead>
             <TableHead>Method</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
@@ -163,14 +203,11 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
                 {formatDisplayDate(entry.date)}
               </TableCell>
               <TableCell className="font-medium">{entry.section || "—"}</TableCell>
-              <TableCell className="whitespace-nowrap text-muted-foreground">
-                {formatInr(entry.carAAmount)}
-              </TableCell>
-              <TableCell className="whitespace-nowrap text-muted-foreground">
-                {formatInr(entry.carBAmount)}
+              <TableCell className="text-muted-foreground">
+                {entry.vehicleName || "—"}
               </TableCell>
               <TableCell className="whitespace-nowrap font-medium">
-                {formatInr(entryTotal(entry))}
+                {formatInr(entry.amount)}
               </TableCell>
               <TableCell>
                 <Badge variant={entry.method === "FASTag" ? "default" : "outline"}>
@@ -214,10 +251,28 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
 
 export function TollTable() {
   const [entries, setEntries] = React.useState<TollEntry[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<TollEntry | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTolls(
+      (data) => {
+        setEntries(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredEntries = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -225,14 +280,31 @@ export function TollTable() {
     return entries.filter(
       (entry) =>
         entry.section.toLowerCase().includes(query) ||
+        entry.vehicleName.toLowerCase().includes(query) ||
         entry.notes.toLowerCase().includes(query)
     )
   }, [entries, searchQuery])
 
   const totalAmount = React.useMemo(
-    () => entries.reduce((sum, entry) => sum + entryTotal(entry), 0),
+    () => entries.reduce((sum, entry) => sum + entry.amount, 0),
     [entries]
   )
+
+  // Toll cost broken down by vehicle, ranked highest first.
+  const perVehicleTotals = React.useMemo<VehicleTotal[]>(() => {
+    const byVehicle = new Map<string, VehicleTotal>()
+    for (const entry of entries) {
+      if (!entry.vehicleId) continue
+      const existing = byVehicle.get(entry.vehicleId) ?? {
+        vehicleId: entry.vehicleId,
+        vehicleName: entry.vehicleName || "Unknown",
+        amount: 0,
+      }
+      existing.amount += entry.amount
+      byVehicle.set(entry.vehicleId, existing)
+    }
+    return Array.from(byVehicle.values()).sort((a, b) => b.amount - a.amount)
+  }, [entries])
 
   function handleAddClick() {
     setDialogState({ mode: "add" })
@@ -246,18 +318,33 @@ export function TollTable() {
     setDeleteTarget(entry)
   }
 
-  function handleDialogSubmit(entry: TollEntry) {
-    setEntries((prev) => {
-      const exists = prev.some((e) => e.id === entry.id)
-      return exists ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev, entry]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewTollEntry, id?: string) {
+    try {
+      if (id) {
+        await updateToll(id, data)
+        toast.success("Toll entry updated")
+      } else {
+        await addToll(data)
+        toast.success("Toll entry added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteToll(deleteTarget.id)
+      toast.success("Toll entry deleted")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -271,6 +358,9 @@ export function TollTable() {
         </p>
       </div>
 
+      {/* Per-vehicle breakdown — only shown once there's data to summarize */}
+      {!loading && <PerVehicleSummary totals={perVehicleTotals} />}
+
       {/* Toolbar: search, view toggle, add */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative w-full sm:max-w-xs">
@@ -281,7 +371,7 @@ export function TollTable() {
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by section or notes…"
+            placeholder="Search by section, vehicle, or notes…"
             className="pl-8"
             aria-label="Search toll entries"
           />
@@ -321,11 +411,13 @@ export function TollTable() {
       </div>
 
       {/* Content */}
-      {entries.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : entries.length === 0 ? (
         <EmptyState
           icon={RouteIcon}
           title="No toll entries yet"
-          description="Log every toll plaza — split by car, tracked against FASTag or cash."
+          description="Log every toll plaza per vehicle — tracked against FASTag or cash."
           actionLabel="Add Toll Entry"
           onAction={handleAddClick}
         />
@@ -365,7 +457,7 @@ export function TollTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -373,17 +465,18 @@ export function TollTable() {
             <AlertDialogTitle>Delete this toll entry?</AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget
-                ? `"${deleteTarget.section}" will be removed. This can't be undone from here.`
+                ? `"${deleteTarget.section}" for ${deleteTarget.vehicleName || "this vehicle"} will be removed. This can't be undone from here.`
                 : "This can't be undone from here."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

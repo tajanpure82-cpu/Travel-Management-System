@@ -3,28 +3,26 @@
 /**
  * HotelTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Hotel Booking module's container component — same architecture as
- * TravellerTable/VehicleTable/ExpenseTable/FuelTable: owns the shared list
- * state, search, a "Needs Booking" filter, view-mode toggle, and the
- * add/edit/delete flows. HotelCard and AddHotelDialog are both
- * presentational/controlled and take everything they need as props.
+ * The Hotel Booking module's container component — Firestore-backed.
  *
- * No backend: `bookings` is local React state only, starting empty. This
- * is a booking *tracker* — it does not pre-load any hotel shortlist data;
- * that stays a separate static reference document.
- *
- * "City" is a Select rather than free text, unlike Vehicles' free-text
- * fields — the trip's route is a real, frozen, closed set of cities, so a
- * Select prevents typos that would silently break search and filtering.
- * "Other" is included as an escape valve.
+ * "Assigned Travellers" is now real — see types/hotel.ts and
+ * AddHotelDialog.tsx. This file adds two things:
+ *   1. A "Travellers" column showing how many people are on each booking.
+ *   2. An "Unassigned Travellers" callout — subscribes to the Travellers
+ *      collection (read-only) to check who isn't on *any* booking yet.
+ *      This is the actual point of connecting these two modules: catching
+ *      "did we forget to give someone a room" before the trip, not after.
  */
 
 import * as React from "react"
 import { addDays, format, isValid, parseISO } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Table,
   TableBody,
@@ -51,49 +49,22 @@ import {
   Pencil,
   Trash2,
   BedDouble,
+  AlertTriangle,
   type LucideIcon,
 } from "lucide-react"
 
 import { HotelCard } from "./HotelCard"
 import { AddHotelDialog } from "./AddHotelDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type HotelCity =
-  | "Raipur"
-  | "Puri"
-  | "Kharagpur"
-  | "Muzaffarpur"
-  | "Kathmandu"
-  | "Pokhara"
-  | "Prayagraj"
-  | "Nagpur"
-  | "Varanasi"
-  | "Chitwan"
-  | "Other"
-
-export type HotelCurrency = "INR" | "NPR"
-
-export type BookingStatus = "Not Booked" | "Booked" | "Confirmed"
-
-export interface HotelBooking {
-  id: string
-  city: HotelCity
-  hotelName: string
-  /** ISO date string, e.g. "2026-08-01". */
-  checkInDate: string
-  nights: number | null
-  rooms: number | null
-  ratePerRoom: number | null
-  currency: HotelCurrency
-  parkingConfirmed: boolean
-  freeCancellation: boolean
-  status: BookingStatus
-  contactPhone: string
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addHotelBooking,
+  deleteHotelBooking,
+  subscribeToHotelBookings,
+  updateHotelBooking,
+} from "@/services/hotels/hotels.service"
+import { subscribeToTravellers } from "@/services/travellers/travellers.service"
+import type { Traveller } from "@/types/traveller"
+import type { BookingStatus, HotelBooking, HotelCurrency, NewHotelBooking } from "@/types/hotel"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -143,6 +114,50 @@ function formatAmount(amount: number, currency: HotelCurrency): string {
 function computeTotalCost(booking: HotelBooking): number | null {
   if (!booking.rooms || !booking.ratePerRoom || !booking.nights) return null
   return booking.rooms * booking.ratePerRoom * booking.nights
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       Unassigned travellers callout                       */
+/* -------------------------------------------------------------------------- */
+
+interface UnassignedCalloutProps {
+  names: string[]
+}
+
+function UnassignedCallout({ names }: UnassignedCalloutProps) {
+  if (names.length === 0) return null
+
+  return (
+    <Card className="border-amber-500/30 bg-amber-500/5">
+      <CardContent className="flex items-start gap-3 p-4">
+        <AlertTriangle
+          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-hidden="true"
+        />
+        <div className="text-sm">
+          <p className="font-medium text-amber-700 dark:text-amber-400">
+            {names.length} traveller{names.length === 1 ? "" : "s"} not assigned to any hotel
+            yet
+          </p>
+          <p className="mt-0.5 text-muted-foreground">{names.join(", ")}</p>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -197,6 +212,7 @@ function TableView({ bookings, onEdit, onDelete }: TableViewProps) {
             <TableHead>Check-in</TableHead>
             <TableHead>Check-out</TableHead>
             <TableHead>Rooms</TableHead>
+            <TableHead>Travellers</TableHead>
             <TableHead>Total Cost</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="text-right">Actions</TableHead>
@@ -221,6 +237,11 @@ function TableView({ bookings, onEdit, onDelete }: TableViewProps) {
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {booking.rooms ?? "—"}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {booking.assignedTravellers.length > 0
+                    ? `${booking.assignedTravellers.length}`
+                    : "—"}
                 </TableCell>
                 <TableCell className="whitespace-nowrap font-medium">
                   {totalCost !== null ? formatAmount(totalCost, booking.currency) : "—"}
@@ -268,11 +289,38 @@ function TableView({ bookings, onEdit, onDelete }: TableViewProps) {
 
 export function HotelTable() {
   const [bookings, setBookings] = React.useState<HotelBooking[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [allTravellers, setAllTravellers] = React.useState<Traveller[]>([])
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [needsBookingOnly, setNeedsBookingOnly] = React.useState(false)
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<HotelBooking | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToHotelBookings(
+      (data) => {
+        setBookings(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
+
+  // Read-only subscription, just for the "Unassigned Travellers" callout
+  // — this needs the *full* traveller list to know who's missing, not
+  // just who's already referenced in a booking.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTravellers((data) => setAllTravellers(data))
+    return unsubscribe
+  }, [])
 
   const filteredBookings = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -291,6 +339,16 @@ export function HotelTable() {
     [bookings]
   )
 
+  const unassignedTravellerNames = React.useMemo(() => {
+    const assignedIds = new Set<string>()
+    for (const booking of bookings) {
+      for (const t of booking.assignedTravellers) {
+        assignedIds.add(t.travellerId)
+      }
+    }
+    return allTravellers.filter((t) => !assignedIds.has(t.id)).map((t) => t.name)
+  }, [bookings, allTravellers])
+
   function handleAddClick() {
     setDialogState({ mode: "add" })
   }
@@ -303,20 +361,33 @@ export function HotelTable() {
     setDeleteTarget(booking)
   }
 
-  function handleDialogSubmit(booking: HotelBooking) {
-    setBookings((prev) => {
-      const exists = prev.some((b) => b.id === booking.id)
-      return exists
-        ? prev.map((b) => (b.id === booking.id ? booking : b))
-        : [...prev, booking]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewHotelBooking, id?: string) {
+    try {
+      if (id) {
+        await updateHotelBooking(id, data)
+        toast.success("Booking updated")
+      } else {
+        await addHotelBooking(data)
+        toast.success("Booking added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setBookings((prev) => prev.filter((b) => b.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteHotelBooking(deleteTarget.id)
+      toast.success("Booking removed")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -329,6 +400,10 @@ export function HotelTable() {
           {notBookedCount === 1 ? "s" : ""} booking
         </p>
       </div>
+
+      {/* Who hasn't been assigned a room yet — only shown once there's
+          both traveller and (some, or zero) booking data to compare. */}
+      {!loading && <UnassignedCallout names={unassignedTravellerNames} />}
 
       {/* Toolbar: search, needs-booking filter, view toggle, add */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -392,11 +467,13 @@ export function HotelTable() {
       </div>
 
       {/* Content */}
-      {bookings.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : bookings.length === 0 ? (
         <EmptyState
           icon={BedDouble}
           title="No hotel bookings yet"
-          description="Track every city's hotel — parking confirmation and free-cancellation status live here too."
+          description="Track every city's hotel — and who's staying in each one."
           actionLabel="Add Booking"
           onAction={handleAddClick}
         />
@@ -440,7 +517,7 @@ export function HotelTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -448,17 +525,18 @@ export function HotelTable() {
             <AlertDialogTitle>Remove this booking?</AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget
-                ? `${deleteTarget.hotelName || deleteTarget.city} (${deleteTarget.city}) will be removed. This can't be undone from here.`
+                ? `${deleteTarget.hotelName || deleteTarget.city} (${deleteTarget.city}) will be removed${deleteTarget.assignedTravellers.length > 0 ? `, unassigning ${deleteTarget.assignedTravellers.length} traveller${deleteTarget.assignedTravellers.length === 1 ? "" : "s"}` : ""}. This can't be undone from here.`
                 : "This can't be undone from here."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Remove
+              {isDeleting ? "Removing…" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

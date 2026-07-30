@@ -3,12 +3,14 @@
 /**
  * AddChecklistDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single checklist item — same
- * pattern as AddTravellerDialog / AddVehicleDialog / etc: no
+ * Fully controlled Add/Edit dialog for a single checklist item — no
  * <DialogTrigger> of its own, driven entirely by `open`/`item` props from
  * ChecklistTable.
  *
- * Mode is inferred from `item`: null/undefined = Add, a ChecklistItem = Edit.
+ * Type-safety sweep: onValueChange handlers now guard against Base UI's
+ * Select passing `null` before asserting to each field's literal union
+ * type (category, priority). See AddExpenseDialog.tsx for the full
+ * explanation.
  */
 
 import * as React from "react"
@@ -35,15 +37,12 @@ import {
 } from "@/components/ui/dialog"
 
 import type {
-  ChecklistItem,
   ChecklistCategory,
+  ChecklistItem,
   ChecklistPriority,
-} from "./ChecklistTable"
+  NewChecklistItem,
+} from "@/types/checklist"
 
-// Local copies of the option lists — kept in this file (rather than
-// imported as values from ChecklistTable) purely to avoid a value-level
-// circular import between the two sibling components. Only *types* are
-// shared across files here.
 const CHECKLIST_CATEGORIES: ChecklistCategory[] = [
   "Pre-Trip",
   "Documents",
@@ -60,7 +59,8 @@ interface AddChecklistDialogProps {
   onOpenChange: (open: boolean) => void
   /** Item being edited, or null/undefined to add a new one. */
   item?: ChecklistItem | null
-  onSubmit: (item: ChecklistItem) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewChecklistItem, id?: string) => void
 }
 
 interface FormState {
@@ -121,14 +121,15 @@ export function AddChecklistDialog({
       return
     }
 
-    onSubmit({
-      id: item?.id ?? crypto.randomUUID(),
+    const data: NewChecklistItem = {
       title: form.title.trim(),
       category: form.category,
       priority: form.priority,
       completed: form.completed,
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, item?.id)
   }
 
   return (
@@ -160,9 +161,10 @@ export function AddChecklistDialog({
               <Label htmlFor="checklist-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("category", value as ChecklistCategory)
-                }
+                }}
               >
                 <SelectTrigger id="checklist-category">
                   <SelectValue />
@@ -181,9 +183,10 @@ export function AddChecklistDialog({
               <Label htmlFor="checklist-priority">Priority</Label>
               <Select
                 value={form.priority}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("priority", value as ChecklistPriority)
-                }
+                }}
               >
                 <SelectTrigger id="checklist-priority">
                   <SelectValue />

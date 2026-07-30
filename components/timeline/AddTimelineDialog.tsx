@@ -3,12 +3,16 @@
 /**
  * AddTimelineDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single timeline entry — same
- * pattern as AddTravellerDialog / AddVehicleDialog / etc: no
+ * Fully controlled Add/Edit dialog for a single timeline entry — no
  * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
  * from TimelineTable.
  *
- * Mode is inferred from `entry`: null/undefined = Add, a TimelineEntry = Edit.
+ * Type-safety sweep: onValueChange now guards against Base UI's Select
+ * passing `null` before asserting to the status union type. See
+ * AddExpenseDialog.tsx for the full explanation.
+ *
+ * The negative-number guard on day/distanceKm (added during the
+ * pre-backend audit) is preserved unchanged here.
  */
 
 import * as React from "react"
@@ -33,12 +37,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-import type { TimelineEntry, TimelineStatus } from "./TimelineTable"
+import type { NewTimelineEntry, TimelineEntry, TimelineStatus } from "@/types/timeline"
 
-// Local copy of the option list — kept in this file (rather than imported
-// as a value from TimelineTable) purely to avoid a value-level circular
-// import between the two sibling components. Only *types* are shared
-// across files here.
 const TIMELINE_STATUSES: TimelineStatus[] = ["Upcoming", "In Progress", "Completed"]
 
 interface AddTimelineDialogProps {
@@ -46,7 +46,8 @@ interface AddTimelineDialogProps {
   onOpenChange: (open: boolean) => void
   /** Entry being edited, or null/undefined to add a new one. */
   entry?: TimelineEntry | null
-  onSubmit: (entry: TimelineEntry) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewTimelineEntry, id?: string) => void
 }
 
 interface FormState {
@@ -80,11 +81,9 @@ function entryToForm(entry: TimelineEntry): FormState {
   }
 }
 
-/** Empty string → null; otherwise parse to a number (NaN also becomes null). */
 /** Empty string -> null. Negative numbers and non-numeric input also
  *  become null -- the HTML `min` attribute on these inputs is only a
- *  soft hint (some mobile keyboards and manual edits can still produce
- *  a negative value), so this is the actual enforcement. */
+ *  soft hint, so this is the actual enforcement. */
 function parseOptionalNumber(value: string): number | null {
   const trimmed = value.trim()
   if (trimmed === "") return null
@@ -123,15 +122,16 @@ export function AddTimelineDialog({
       return
     }
 
-    onSubmit({
-      id: entry?.id ?? crypto.randomUUID(),
+    const data: NewTimelineEntry = {
       day: parseOptionalNumber(form.day),
       date: form.date.trim() === "" ? null : form.date,
       title: form.title.trim(),
       distanceKm: parseOptionalNumber(form.distanceKm),
       status: form.status,
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, entry?.id)
   }
 
   return (
@@ -199,7 +199,10 @@ export function AddTimelineDialog({
               <Label htmlFor="timeline-status">Status</Label>
               <Select
                 value={form.status}
-                onValueChange={(value) => updateField("status", value as TimelineStatus)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("status", value as TimelineStatus)
+                }}
               >
                 <SelectTrigger id="timeline-status">
                   <SelectValue />

@@ -3,28 +3,25 @@
 /**
  * TimelineTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Trip Timeline module's container component — same architecture as
- * TravellerTable/VehicleTable/etc: owns the shared list state, search, a
- * "Hide completed" filter, view-mode toggle, and the add/edit/delete
- * flows. TimelineCard and AddTimelineDialog are both presentational/
- * controlled and take everything they need as props.
- *
- * No backend: `entries` is local React state only, starting empty. Not
- * wired to Context yet — per current instructions, this module stays on
- * plain local state until the Dashboard integration work resumes.
+ * The Trip Timeline module's container component — Firestore-backed.
+ * Print added: a printed itinerary is a reasonable backup to have on
+ * paper. Search, filter, view toggle, and Edit/Delete are print:hidden.
  *
  * Entries are always displayed sorted by day number ascending (entries
- * with no day set sort last) — a timeline should read chronologically,
- * not in whatever order things were added, unlike every other module
- * here where insertion order is fine.
+ * with no day set sort last) — computed client-side via `sortByDay`,
+ * unchanged from before. No orderByField is passed to the Firestore
+ * subscription — see services/timeline/timeline.service.ts for why.
  */
 
 import * as React from "react"
 import { format, isValid, parseISO } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { PrintButton } from "@/components/ui/print-button"
 import {
   Table,
   TableBody,
@@ -56,24 +53,14 @@ import {
 
 import { TimelineCard } from "./TimelineCard"
 import { AddTimelineDialog } from "./AddTimelineDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type TimelineStatus = "Upcoming" | "In Progress" | "Completed"
-
-export interface TimelineEntry {
-  id: string
-  /** Day 1–11 (or whatever numbering fits), or null if not tied to a day. */
-  day: number | null
-  /** ISO date string, or null if not yet known. */
-  date: string | null
-  title: string
-  distanceKm: number | null
-  status: TimelineStatus
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addTimelineEntry,
+  deleteTimelineEntry,
+  subscribeToTimelineEntries,
+  updateTimelineEntry,
+} from "@/services/timeline/timeline.service"
+import type { NewTimelineEntry, TimelineEntry, TimelineStatus } from "@/types/timeline"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -83,9 +70,6 @@ type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; entry: TimelineEntry } | null
 
-/** Kept local to each file that needs it (also duplicated in
- *  TimelineCard) rather than exported, purely to avoid a value-level
- *  circular import between the sibling files for small pure functions. */
 function statusBadgeVariant(
   status: TimelineStatus
 ): "default" | "secondary" | "outline" {
@@ -108,6 +92,20 @@ function sortByDay(entries: TimelineEntry[]): TimelineEntry[] {
     if (b.day === null) return -1
     return a.day - b.day
   })
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -163,7 +161,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
             <TableHead>Date</TableHead>
             <TableHead>Distance</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right print:hidden">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -184,7 +182,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
                   {entry.status}
                 </Badge>
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right print:hidden">
                 <div className="flex justify-end gap-1">
                   <Button
                     type="button"
@@ -221,11 +219,29 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
 
 export function TimelineTable() {
   const [entries, setEntries] = React.useState<TimelineEntry[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [hideCompleted, setHideCompleted] = React.useState(false)
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<TimelineEntry | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — no orderByField here, see the
+  // service file for why.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTimelineEntries(
+      (data) => {
+        setEntries(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredEntries = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -256,18 +272,33 @@ export function TimelineTable() {
     setDeleteTarget(entry)
   }
 
-  function handleDialogSubmit(entry: TimelineEntry) {
-    setEntries((prev) => {
-      const exists = prev.some((e) => e.id === entry.id)
-      return exists ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev, entry]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewTimelineEntry, id?: string) {
+    try {
+      if (id) {
+        await updateTimelineEntry(id, data)
+        toast.success("Leg updated")
+      } else {
+        await addTimelineEntry(data)
+        toast.success("Leg added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteTimelineEntry(deleteTarget.id)
+      toast.success("Leg deleted")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -280,8 +311,8 @@ export function TimelineTable() {
         </p>
       </div>
 
-      {/* Toolbar: search, hide-completed filter, view toggle, add */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Toolbar: search, hide-completed filter, view toggle, print, add */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div className="relative w-full sm:max-w-xs">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -334,6 +365,8 @@ export function TimelineTable() {
             </Button>
           </div>
 
+          <PrintButton />
+
           <Button type="button" size="sm" className="gap-1.5" onClick={handleAddClick}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             Add Leg
@@ -342,7 +375,9 @@ export function TimelineTable() {
       </div>
 
       {/* Content */}
-      {entries.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : entries.length === 0 ? (
         <EmptyState
           icon={MapIcon}
           title="No timeline entries yet"
@@ -390,7 +425,7 @@ export function TimelineTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -403,12 +438,13 @@ export function TimelineTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

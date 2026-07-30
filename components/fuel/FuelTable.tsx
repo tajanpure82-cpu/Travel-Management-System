@@ -3,30 +3,26 @@
 /**
  * FuelTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Fuel Log module's container component — same architecture as
- * TravellerTable/VehicleTable/ExpenseTable: owns the shared list state,
- * search, view-mode toggle, and the add/edit/delete flows. FuelCard and
- * AddFuelDialog are both presentational/controlled and take everything
- * they need as props.
+ * The Fuel Log module's container component — Firestore-backed.
  *
- * No backend: `entries` is local React state only, starting empty.
+ * "Vehicle" is now a real Vehicle reference (vehicleId + vehicleName),
+ * not free text — see types/fuel.ts and AddFuelDialog.tsx. This file adds
+ * the Per-Vehicle Fuel Summary section: litres + cost broken down by
+ * vehicle, same shape as Expenses' Per-Person Kitty Contribution.
  *
- * Note: "Vehicle" is a free-text field rather than a live lookup into the
- * Vehicles module — same reasoning as Vehicles' "Driver Assigned": there's
- * no shared data layer between modules, so cross-referencing would be
- * fragile. Type in whatever name you gave the vehicle in that module.
- *
- * Rate per litre is a *derived* display value (amount / litres), not a
- * stored field — storing it separately would let it drift out of sync
- * with the amount and litres actually entered.
+ * Rate per litre stays a *derived* display value (amount / litres), not a
+ * stored field — unchanged from before.
  */
 
 import * as React from "react"
 import { format, isValid, parseISO } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Table,
   TableBody,
@@ -53,32 +49,20 @@ import {
   Pencil,
   Trash2,
   Fuel as FuelIcon,
+  Car,
   type LucideIcon,
 } from "lucide-react"
 
 import { FuelCard } from "./FuelCard"
 import { AddFuelDialog } from "./AddFuelDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type FuelCurrency = "INR" | "NPR"
-
-export interface FuelEntry {
-  id: string
-  /** ISO date string, e.g. "2026-08-01". */
-  date: string
-  /** Free text — whatever name the vehicle was given in the Vehicles module. */
-  vehicle: string
-  location: string
-  odometer: number | null
-  litres: number
-  amount: number
-  currency: FuelCurrency
-  fullTank: boolean
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addFuelEntry,
+  deleteFuelEntry,
+  subscribeToFuelEntries,
+  updateFuelEntry,
+} from "@/services/fuel/fuel.service"
+import type { FuelCurrency, FuelEntry, NewFuelEntry } from "@/types/fuel"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -88,9 +72,6 @@ type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; entry: FuelEntry } | null
 
-/** Formats a stored ISO date string for display. Kept local rather than
- *  shared, matching this codebase's convention of duplicating small
- *  formatting helpers per file rather than adding a shared utils file. */
 function formatDisplayDate(iso: string): string {
   if (!iso) return "—"
   const parsed = parseISO(iso)
@@ -114,6 +95,67 @@ function ratePerLitre(entry: FuelEntry): string {
   if (entry.litres <= 0) return "—"
   const rate = entry.amount / entry.litres
   return `${formatAmount(rate, entry.currency)}/L`
+}
+
+interface VehicleTotal {
+  vehicleId: string
+  vehicleName: string
+  litres: number
+  inr: number
+  npr: number
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            Per-vehicle summary                            */
+/* -------------------------------------------------------------------------- */
+
+interface PerVehicleSummaryProps {
+  totals: VehicleTotal[]
+}
+
+function PerVehicleSummary({ totals }: PerVehicleSummaryProps) {
+  if (totals.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <Car className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <CardTitle className="text-sm font-medium">Fuel Cost by Vehicle</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {totals.map((vehicle) => (
+          <div
+            key={vehicle.vehicleId}
+            className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm"
+          >
+            <span className="font-medium">{vehicle.vehicleName}</span>
+            <span className="text-muted-foreground">
+              {vehicle.litres}L ·{" "}
+              {vehicle.npr > 0
+                ? `${formatAmount(vehicle.inr, "INR")} + ${formatAmount(vehicle.npr, "NPR")}`
+                : formatAmount(vehicle.inr, "INR")}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -180,7 +222,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
               <TableCell className="whitespace-nowrap text-muted-foreground">
                 {formatDisplayDate(entry.date)}
               </TableCell>
-              <TableCell className="font-medium">{entry.vehicle || "—"}</TableCell>
+              <TableCell className="font-medium">{entry.vehicleName || "—"}</TableCell>
               <TableCell className="text-muted-foreground">
                 {entry.location || "—"}
               </TableCell>
@@ -206,7 +248,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    aria-label={`Edit fuel entry at ${entry.location}`}
+                    aria-label={`Edit fuel entry for ${entry.vehicleName}`}
                     onClick={() => onEdit(entry)}
                   >
                     <Pencil className="h-4 w-4" aria-hidden="true" />
@@ -215,7 +257,7 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    aria-label={`Delete fuel entry at ${entry.location}`}
+                    aria-label={`Delete fuel entry for ${entry.vehicleName}`}
                     className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                     onClick={() => onDelete(entry)}
                   >
@@ -237,17 +279,35 @@ function TableView({ entries, onEdit, onDelete }: TableViewProps) {
 
 export function FuelTable() {
   const [entries, setEntries] = React.useState<FuelEntry[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<FuelEntry | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToFuelEntries(
+      (data) => {
+        setEntries(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredEntries = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
     if (!query) return entries
     return entries.filter(
       (entry) =>
-        entry.vehicle.toLowerCase().includes(query) ||
+        entry.vehicleName.toLowerCase().includes(query) ||
         entry.location.toLowerCase().includes(query) ||
         entry.notes.toLowerCase().includes(query)
     )
@@ -265,6 +325,28 @@ export function FuelTable() {
     )
   }, [entries])
 
+  // Fuel cost broken down by vehicle, ranked highest-litres first — the
+  // "which vehicle is costing more in fuel" view, made reliable now that
+  // vehicleId is a real Vehicle reference instead of free text.
+  const perVehicleTotals = React.useMemo<VehicleTotal[]>(() => {
+    const byVehicle = new Map<string, VehicleTotal>()
+    for (const entry of entries) {
+      if (!entry.vehicleId) continue
+      const existing = byVehicle.get(entry.vehicleId) ?? {
+        vehicleId: entry.vehicleId,
+        vehicleName: entry.vehicleName || "Unknown",
+        litres: 0,
+        inr: 0,
+        npr: 0,
+      }
+      existing.litres += entry.litres
+      if (entry.currency === "INR") existing.inr += entry.amount
+      else existing.npr += entry.amount
+      byVehicle.set(entry.vehicleId, existing)
+    }
+    return Array.from(byVehicle.values()).sort((a, b) => b.litres - a.litres)
+  }, [entries])
+
   function handleAddClick() {
     setDialogState({ mode: "add" })
   }
@@ -277,18 +359,33 @@ export function FuelTable() {
     setDeleteTarget(entry)
   }
 
-  function handleDialogSubmit(entry: FuelEntry) {
-    setEntries((prev) => {
-      const exists = prev.some((e) => e.id === entry.id)
-      return exists ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev, entry]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewFuelEntry, id?: string) {
+    try {
+      if (id) {
+        await updateFuelEntry(id, data)
+        toast.success("Fuel entry updated")
+      } else {
+        await addFuelEntry(data)
+        toast.success("Fuel entry added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setEntries((prev) => prev.filter((e) => e.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteFuelEntry(deleteTarget.id)
+      toast.success("Fuel entry deleted")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   const totalsSummary =
@@ -305,6 +402,9 @@ export function FuelTable() {
           {entries.length} entr{entries.length === 1 ? "y" : "ies"} · {totalsSummary}
         </p>
       </div>
+
+      {/* Per-vehicle breakdown — only shown once there's data to summarize */}
+      {!loading && <PerVehicleSummary totals={perVehicleTotals} />}
 
       {/* Toolbar: search, view toggle, add */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -356,7 +456,9 @@ export function FuelTable() {
       </div>
 
       {/* Content */}
-      {entries.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : entries.length === 0 ? (
         <EmptyState
           icon={FuelIcon}
           title="No fuel entries yet"
@@ -400,7 +502,7 @@ export function FuelTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -408,17 +510,18 @@ export function FuelTable() {
             <AlertDialogTitle>Delete this fuel entry?</AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget
-                ? `The ${deleteTarget.litres}L fill-up at ${deleteTarget.location || "this location"} will be removed. This can't be undone from here.`
+                ? `The ${deleteTarget.litres}L fill-up for ${deleteTarget.vehicleName || "this vehicle"} will be removed. This can't be undone from here.`
                 : "This can't be undone from here."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

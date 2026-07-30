@@ -3,11 +3,15 @@
 /**
  * AddTollDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single toll entry — same pattern
- * as AddFuelDialog / AddExpenseDialog / etc: no <DialogTrigger> of its
- * own, driven entirely by `open`/`entry` props from TollTable.
+ * Fully controlled Add/Edit dialog for a single toll entry — no
+ * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
+ * from TollTable.
  *
- * Mode is inferred from `entry`: null/undefined = Add, a TollEntry = Edit.
+ * Legacy-data fix: `entryToForm` now defaults `vehicleId` to `""` if
+ * missing — a toll entry created before the "one entry, one vehicle"
+ * redesign (or before that field existed at all) has this genuinely
+ * undefined, not just empty. Same class of gap fixed in
+ * AddFuelDialog.tsx, AddExpenseDialog.tsx, and AddHotelDialog.tsx.
  */
 
 import * as React from "react"
@@ -32,12 +36,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-import type { TollEntry, TollMethod } from "./TollTable"
+import { subscribeToVehicles } from "@/services/vehicles/vehicles.service"
+import type { Vehicle } from "@/types/vehicle"
+import type { NewTollEntry, TollEntry, TollMethod } from "@/types/toll"
 
-// Local copy of the option list — kept in this file (rather than imported
-// as a value from TollTable) purely to avoid a value-level circular
-// import between the two sibling components. Only *types* are shared
-// across files here.
 const TOLL_METHODS: TollMethod[] = ["FASTag", "Cash"]
 
 interface AddTollDialogProps {
@@ -45,14 +47,15 @@ interface AddTollDialogProps {
   onOpenChange: (open: boolean) => void
   /** Entry being edited, or null/undefined to add a new one. */
   entry?: TollEntry | null
-  onSubmit: (entry: TollEntry) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewTollEntry, id?: string) => void
 }
 
 interface FormState {
   date: string
   section: string
-  carAAmount: string
-  carBAmount: string
+  vehicleId: string
+  amount: string
   method: TollMethod
   notes: string
 }
@@ -65,8 +68,8 @@ function emptyForm(): FormState {
   return {
     date: todayIso(),
     section: "",
-    carAAmount: "",
-    carBAmount: "",
+    vehicleId: "",
+    amount: "",
     method: "FASTag",
     notes: "",
   }
@@ -76,28 +79,25 @@ function entryToForm(entry: TollEntry): FormState {
   return {
     date: entry.date,
     section: entry.section,
-    carAAmount: String(entry.carAAmount),
-    carBAmount: String(entry.carBAmount),
+    vehicleId: entry.vehicleId ?? "",
+    amount: String(entry.amount),
     method: entry.method,
     notes: entry.notes,
   }
-}
-
-/** Parses a required amount field: empty/invalid/negative all become 0
- *  rather than blocking submission — a toll leg might genuinely apply to
- *  only one car, leaving the other at zero. */
-function parseAmount(value: string): number {
-  const trimmed = value.trim()
-  if (trimmed === "") return 0
-  const parsed = Number(trimmed)
-  if (Number.isNaN(parsed) || parsed < 0) return 0
-  return parsed
 }
 
 export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDialogProps) {
   const isEditMode = Boolean(entry)
   const [form, setForm] = React.useState<FormState>(emptyForm)
   const [error, setError] = React.useState<string | null>(null)
+  const [vehicles, setVehicles] = React.useState<Vehicle[]>([])
+
+  // Read-only subscription, just to populate the "Vehicle" dropdown with
+  // real vehicles. This dialog never writes to the Vehicles collection.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToVehicles((data) => setVehicles(data))
+    return unsubscribe
+  }, [])
 
   // Re-seed the form every time the dialog opens, matching whichever
   // entry (if any) it was opened for.
@@ -119,23 +119,34 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
       return
     }
 
-    const carAAmount = parseAmount(form.carAAmount)
-    const carBAmount = parseAmount(form.carBAmount)
-
-    if (carAAmount === 0 && carBAmount === 0) {
-      setError("Enter an amount for at least one car.")
+    if (!form.vehicleId) {
+      setError("Select which vehicle this toll was for.")
       return
     }
 
-    onSubmit({
-      id: entry?.id ?? crypto.randomUUID(),
+    const vehicle = vehicles.find((v) => v.id === form.vehicleId)
+    if (!vehicle) {
+      setError("That vehicle no longer exists — pick another.")
+      return
+    }
+
+    const amount = Number(form.amount)
+    if (form.amount.trim() === "" || Number.isNaN(amount) || amount <= 0) {
+      setError("Enter a valid amount greater than 0.")
+      return
+    }
+
+    const data: NewTollEntry = {
       date: form.date,
       section: form.section.trim(),
-      carAAmount,
-      carBAmount,
+      vehicleId: vehicle.id,
+      vehicleName: vehicle.name,
+      amount,
       method: form.method,
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, entry?.id)
   }
 
   return (
@@ -146,7 +157,7 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
           <DialogDescription>
             {isEditMode
               ? "Update this toll entry's details."
-              : "Log a toll plaza, split by car."}
+              : "Log a toll plaza for one vehicle. If more than one vehicle crossed, log a separate entry for each."}
           </DialogDescription>
         </DialogHeader>
 
@@ -164,6 +175,31 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="toll-vehicle">Vehicle *</Label>
+              <Select
+                value={form.vehicleId}
+                onValueChange={(value) => updateField("vehicleId", value ?? "")}
+              >
+                <SelectTrigger id="toll-vehicle">
+                  <SelectValue placeholder="Select a vehicle" />
+                </SelectTrigger>
+                <SelectContent>
+                  {vehicles.length === 0 ? (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      Add vehicles first
+                    </div>
+                  ) : (
+                    vehicles.map((vehicle) => (
+                      <SelectItem key={vehicle.id} value={vehicle.id}>
+                        {vehicle.name}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="toll-date">Date</Label>
               <Input
                 id="toll-date"
@@ -174,10 +210,26 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="toll-amount">Amount *</Label>
+              <Input
+                id="toll-amount"
+                type="number"
+                min={0}
+                inputMode="decimal"
+                value={form.amount}
+                onChange={(e) => updateField("amount", e.target.value)}
+                placeholder="e.g. 1400"
+              />
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="toll-method">Method</Label>
               <Select
                 value={form.method}
-                onValueChange={(value) => updateField("method", value as TollMethod)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("method", value as TollMethod)
+                }}
               >
                 <SelectTrigger id="toll-method">
                   <SelectValue />
@@ -190,32 +242,6 @@ export function AddTollDialog({ open, onOpenChange, entry, onSubmit }: AddTollDi
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="toll-car-a">Car A Amount</Label>
-              <Input
-                id="toll-car-a"
-                type="number"
-                min={0}
-                inputMode="decimal"
-                value={form.carAAmount}
-                onChange={(e) => updateField("carAAmount", e.target.value)}
-                placeholder="e.g. 1400"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="toll-car-b">Car B Amount</Label>
-              <Input
-                id="toll-car-b"
-                type="number"
-                min={0}
-                inputMode="decimal"
-                value={form.carBAmount}
-                onChange={(e) => updateField("carBAmount", e.target.value)}
-                placeholder="e.g. 1400"
-              />
             </div>
           </div>
 

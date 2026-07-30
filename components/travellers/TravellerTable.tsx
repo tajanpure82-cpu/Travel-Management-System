@@ -3,25 +3,23 @@
 /**
  * TravellerTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Traveller Management module's container component. Despite the
- * filename, this owns BOTH the Table View and the Card View (toggle at
- * the top), plus search, the "drivers only" filter, and the add/edit/
- * delete flows — it's the whole module, not just the table. The three
- * files in this folder were scoped as an exact set, so this is the
- * natural place for the shared list state to live (TravellerCard and
- * AddTravellerDialog are both presentational/controlled and take
- * everything they need as props).
- *
- * No backend: `travellers` is local React state only, starting empty.
- * Nothing here is seeded with invented names — this ships as a genuinely
- * empty list with a real empty state, ready for the group to fill in.
+ * The Traveller Management module's container component — Firestore-
+ * backed. Print added: a roster with blood groups and emergency contacts
+ * is genuinely useful on paper (e.g. handed to a hospital). Search,
+ * driver filter, view toggle, and Edit/Delete are print:hidden; the
+ * "Travellers by Vehicle" summary stays visible since it's useful
+ * context on a printout, not interactive chrome.
  */
 
 import * as React from "react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { PrintButton } from "@/components/ui/print-button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Table,
   TableBody,
@@ -49,47 +47,20 @@ import {
   Trash2,
   Users,
   UserCheck,
+  Car,
   type LucideIcon,
 } from "lucide-react"
 
 import { TravellerCard } from "./TravellerCard"
 import { AddTravellerDialog } from "./AddTravellerDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type BloodGroup =
-  | "A+"
-  | "A-"
-  | "B+"
-  | "B-"
-  | "AB+"
-  | "AB-"
-  | "O+"
-  | "O-"
-  | "Unknown"
-
-export type VehicleAssignment = "Unassigned" | "Car A" | "Car B"
-
-export type SeatNumber = 1 | 2 | 3 | 4 | 5
-
-export type DocumentStatus = "Valid" | "Expired" | "Not Provided"
-
-export interface Traveller {
-  id: string
-  name: string
-  nickname: string
-  phone: string
-  emergencyContact: string
-  bloodGroup: BloodGroup
-  isDriver: boolean
-  assignedVehicle: VehicleAssignment
-  seatNumber: SeatNumber | null
-  passportStatus: DocumentStatus
-  voterIdStatus: DocumentStatus
-  medicalNotes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addTraveller,
+  deleteTraveller,
+  subscribeToTravellers,
+  updateTraveller,
+} from "@/services/travellers/travellers.service"
+import type { DocumentStatus, NewTraveller, Traveller } from "@/types/traveller"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -99,15 +70,68 @@ type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; traveller: Traveller } | null
 
-/** Kept local to each file that needs it (also duplicated in TravellerCard)
- *  rather than exported, purely to avoid a value-level circular import
- *  between the sibling files for a 3-line pure function. */
 function documentBadgeVariant(
   status: DocumentStatus
 ): "default" | "destructive" | "secondary" {
   if (status === "Valid") return "default"
   if (status === "Expired") return "destructive"
   return "secondary"
+}
+
+interface VehicleGroupCount {
+  key: string
+  label: string
+  count: number
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       Travellers-by-vehicle summary                       */
+/* -------------------------------------------------------------------------- */
+
+interface VehicleGroupSummaryProps {
+  groups: VehicleGroupCount[]
+}
+
+function VehicleGroupSummary({ groups }: VehicleGroupSummaryProps) {
+  if (groups.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <Car className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <CardTitle className="text-sm font-medium">Travellers by Vehicle</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {groups.map((group) => (
+          <div
+            key={group.key}
+            className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm"
+          >
+            <span className="font-medium">{group.label}</span>
+            <span className="text-muted-foreground">
+              {group.count} traveller{group.count === 1 ? "" : "s"}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -164,7 +188,7 @@ function TableView({ travellers, onEdit, onDelete }: TableViewProps) {
             <TableHead>Driver</TableHead>
             <TableHead>Vehicle / Seat</TableHead>
             <TableHead>Documents</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right print:hidden">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -190,7 +214,7 @@ function TableView({ travellers, onEdit, onDelete }: TableViewProps) {
                 )}
               </TableCell>
               <TableCell className="whitespace-nowrap text-muted-foreground">
-                {traveller.assignedVehicle}
+                {traveller.assignedVehicleName ?? "Unassigned"}
                 {traveller.seatNumber ? ` · Seat ${traveller.seatNumber}` : ""}
               </TableCell>
               <TableCell>
@@ -209,7 +233,7 @@ function TableView({ travellers, onEdit, onDelete }: TableViewProps) {
                   </Badge>
                 </div>
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right print:hidden">
                 <div className="flex justify-end gap-1">
                   <Button
                     type="button"
@@ -246,11 +270,29 @@ function TableView({ travellers, onEdit, onDelete }: TableViewProps) {
 
 export function TravellerTable() {
   const [travellers, setTravellers] = React.useState<Traveller[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [showDriversOnly, setShowDriversOnly] = React.useState(false)
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<Traveller | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToTravellers(
+      (data) => {
+        setTravellers(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredTravellers = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -270,6 +312,22 @@ export function TravellerTable() {
     [travellers]
   )
 
+  const vehicleGroups = React.useMemo<VehicleGroupCount[]>(() => {
+    const byVehicle = new Map<string, VehicleGroupCount>()
+    for (const traveller of travellers) {
+      const key = traveller.assignedVehicleId ?? "unassigned"
+      const label = traveller.assignedVehicleName ?? "Unassigned"
+      const existing = byVehicle.get(key) ?? { key, label, count: 0 }
+      existing.count += 1
+      byVehicle.set(key, existing)
+    }
+    return Array.from(byVehicle.values()).sort((a, b) => {
+      if (a.key === "unassigned") return 1
+      if (b.key === "unassigned") return -1
+      return b.count - a.count
+    })
+  }, [travellers])
+
   function handleAddClick() {
     setDialogState({ mode: "add" })
   }
@@ -282,20 +340,33 @@ export function TravellerTable() {
     setDeleteTarget(traveller)
   }
 
-  function handleDialogSubmit(traveller: Traveller) {
-    setTravellers((prev) => {
-      const exists = prev.some((t) => t.id === traveller.id)
-      return exists
-        ? prev.map((t) => (t.id === traveller.id ? traveller : t))
-        : [...prev, traveller]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewTraveller, id?: string) {
+    try {
+      if (id) {
+        await updateTraveller(id, data)
+        toast.success("Traveller updated")
+      } else {
+        await addTraveller(data)
+        toast.success("Traveller added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setTravellers((prev) => prev.filter((t) => t.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteTraveller(deleteTarget.id)
+      toast.success("Traveller removed")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -309,8 +380,11 @@ export function TravellerTable() {
         </p>
       </div>
 
-      {/* Toolbar: search, drivers-only filter, view toggle, add */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Headcount per vehicle — stays visible when printing */}
+      {!loading && <VehicleGroupSummary groups={vehicleGroups} />}
+
+      {/* Toolbar: search, drivers-only filter, view toggle, print, add */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div className="relative w-full sm:max-w-xs">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -363,6 +437,8 @@ export function TravellerTable() {
             </Button>
           </div>
 
+          <PrintButton />
+
           <Button type="button" size="sm" className="gap-1.5" onClick={handleAddClick}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             Add Traveller
@@ -371,7 +447,9 @@ export function TravellerTable() {
       </div>
 
       {/* Content */}
-      {travellers.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : travellers.length === 0 ? (
         <EmptyState
           icon={Users}
           title="No travellers yet"
@@ -419,7 +497,7 @@ export function TravellerTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -431,12 +509,13 @@ export function TravellerTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Remove
+              {isDeleting ? "Removing…" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

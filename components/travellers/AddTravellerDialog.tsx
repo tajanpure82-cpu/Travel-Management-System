@@ -3,14 +3,28 @@
 /**
  * AddTravellerDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single traveller. Deliberately has
- * no <DialogTrigger> of its own — TravellerTable opens it both for its
- * "Add Traveller" button and for every row/card's "Edit" action, by
- * driving `open` and `traveller` from its own state. That keeps this
- * component decoupled from where — and how many places — can open it,
- * and avoids the asChild/render trigger-composition question entirely.
+ * Fully controlled Add/Edit dialog for a single traveller. No
+ * <DialogTrigger> of its own — TravellerTable opens it for both the
+ * "Add" button and every row/card's "Edit" action.
  *
- * Mode is inferred from `traveller`: null/undefined = Add, a Traveller = Edit.
+ * "Assigned Vehicle" is a live dropdown of real Vehicles; "none" is the
+ * sentinel value for "Unassigned" in the Select.
+ *
+ * Type-safety sweep: every onValueChange handler now explicitly accounts
+ * for Base UI's Select being typed `(value: string | null) => void`
+ * (unlike Radix, which has no null). Plain-string fields (bloodGroup as
+ * a union, assignedVehicleId as a plain string) get the appropriate
+ * treatment per field; union-typed fields guard null before asserting.
+ *
+ * Seat Number specifically had a genuine *runtime* bug, not just a type
+ * gap: the original code was `value === "none" ? null : Number(value) as
+ * SeatNumber`, and `Number(null)` evaluates to `0` in JavaScript — a
+ * value that isn't a valid SeatNumber (1-5) and isn't correctly treated
+ * as "unset" either. If Base UI ever called onValueChange with an actual
+ * `null`, a traveller's seat would have silently become an invalid `0`.
+ * This compiled with zero TypeScript errors before the fix — it was
+ * invisible to the compiler, only wrong at runtime. Now `null` is
+ * checked explicitly, same as `"none"`, before any conversion happens.
  */
 
 import * as React from "react"
@@ -36,19 +50,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
+import { subscribeToVehicles } from "@/services/vehicles/vehicles.service"
+import type { Vehicle } from "@/types/vehicle"
 import type {
   Traveller,
+  NewTraveller,
   BloodGroup,
-  VehicleAssignment,
   SeatNumber,
   DocumentStatus,
-} from "./TravellerTable"
+} from "@/types/traveller"
 
-// Local copies of the option lists — kept in this file (rather than
-// imported as values from TravellerTable) purely to avoid a value-level
-// circular import between the two sibling components. Only *types* are
-// shared across files here; these lists are small enough that duplicating
-// them is simpler than introducing a fourth shared file.
 const BLOOD_GROUPS: BloodGroup[] = [
   "A+",
   "A-",
@@ -70,7 +81,8 @@ interface AddTravellerDialogProps {
   onOpenChange: (open: boolean) => void
   /** Traveller being edited, or null/undefined to add a new one. */
   traveller?: Traveller | null
-  onSubmit: (traveller: Traveller) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewTraveller, id?: string) => void
 }
 
 interface FormState {
@@ -80,7 +92,7 @@ interface FormState {
   emergencyContact: string
   bloodGroup: BloodGroup
   isDriver: boolean
-  assignedVehicle: VehicleAssignment
+  assignedVehicleId: string
   seatNumber: SeatNumber | null
   passportStatus: DocumentStatus
   voterIdStatus: DocumentStatus
@@ -94,7 +106,7 @@ const EMPTY_FORM: FormState = {
   emergencyContact: "",
   bloodGroup: "Unknown",
   isDriver: false,
-  assignedVehicle: "Unassigned",
+  assignedVehicleId: "none",
   seatNumber: null,
   passportStatus: "Not Provided",
   voterIdStatus: "Not Provided",
@@ -109,7 +121,7 @@ function travellerToForm(traveller: Traveller): FormState {
     emergencyContact: traveller.emergencyContact,
     bloodGroup: traveller.bloodGroup,
     isDriver: traveller.isDriver,
-    assignedVehicle: traveller.assignedVehicle,
+    assignedVehicleId: traveller.assignedVehicleId ?? "none",
     seatNumber: traveller.seatNumber,
     passportStatus: traveller.passportStatus,
     voterIdStatus: traveller.voterIdStatus,
@@ -126,8 +138,17 @@ export function AddTravellerDialog({
   const isEditMode = Boolean(traveller)
   const [form, setForm] = React.useState<FormState>(EMPTY_FORM)
   const [error, setError] = React.useState<string | null>(null)
+  const [vehicles, setVehicles] = React.useState<Vehicle[]>([])
 
-  // Re-seed the form every time the dialog opens, matching whichever
+  // Read-only subscription, just to populate the "Assigned Vehicle"
+  // dropdown with real vehicles. This dialog never writes to the
+  // Vehicles collection.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToVehicles((data) => setVehicles(data))
+    return unsubscribe
+  }, [])
+
+  // Re-seed the form whenever the dialog opens, matching whichever
   // traveller (if any) it was opened for.
   React.useEffect(() => {
     if (!open) return
@@ -147,15 +168,27 @@ export function AddTravellerDialog({
       return
     }
 
-    onSubmit({
-      id: traveller?.id ?? crypto.randomUUID(),
-      ...form,
+    const assignedVehicle =
+      form.assignedVehicleId !== "none"
+        ? vehicles.find((v) => v.id === form.assignedVehicleId)
+        : undefined
+
+    const data: NewTraveller = {
       name: form.name.trim(),
       nickname: form.nickname.trim(),
       phone: form.phone.trim(),
       emergencyContact: form.emergencyContact.trim(),
+      bloodGroup: form.bloodGroup,
+      isDriver: form.isDriver,
+      assignedVehicleId: assignedVehicle?.id ?? null,
+      assignedVehicleName: assignedVehicle?.name ?? null,
+      seatNumber: form.seatNumber,
+      passportStatus: form.passportStatus,
+      voterIdStatus: form.voterIdStatus,
       medicalNotes: form.medicalNotes.trim(),
-    })
+    }
+
+    onSubmit(data, traveller?.id)
   }
 
   return (
@@ -218,7 +251,10 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-blood-group">Blood Group</Label>
               <Select
                 value={form.bloodGroup}
-                onValueChange={(value) => updateField("bloodGroup", value as BloodGroup)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("bloodGroup", value as BloodGroup)
+                }}
               >
                 <SelectTrigger id="traveller-blood-group">
                   <SelectValue />
@@ -237,7 +273,9 @@ export function AddTravellerDialog({
               <Checkbox
                 id="traveller-is-driver"
                 checked={form.isDriver}
-                onCheckedChange={(checked) => updateField("isDriver", checked === true)}
+                onCheckedChange={(checked) =>
+                  updateField("isDriver", checked === true)
+                }
               />
               <Label htmlFor="traveller-is-driver" className="cursor-pointer font-normal">
                 This person is a driver
@@ -247,18 +285,19 @@ export function AddTravellerDialog({
             <div className="space-y-2">
               <Label htmlFor="traveller-vehicle">Assigned Vehicle</Label>
               <Select
-                value={form.assignedVehicle}
-                onValueChange={(value) =>
-                  updateField("assignedVehicle", value as VehicleAssignment)
-                }
+                value={form.assignedVehicleId}
+                onValueChange={(value) => updateField("assignedVehicleId", value ?? "none")}
               >
                 <SelectTrigger id="traveller-vehicle">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Unassigned">Unassigned</SelectItem>
-                  <SelectItem value="Car A">Car A</SelectItem>
-                  <SelectItem value="Car B">Car B</SelectItem>
+                  <SelectItem value="none">Unassigned</SelectItem>
+                  {vehicles.map((vehicle) => (
+                    <SelectItem key={vehicle.id} value={vehicle.id}>
+                      {vehicle.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -267,12 +306,16 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-seat">Seat Number</Label>
               <Select
                 value={form.seatNumber ? String(form.seatNumber) : "none"}
-                onValueChange={(value) =>
-                  updateField(
-                    "seatNumber",
-                    value === "none" ? null : (Number(value) as SeatNumber)
-                  )
-                }
+                onValueChange={(value) => {
+                  // "none" and null are both treated as "unset" — see the
+                  // file header for why null must be checked explicitly
+                  // here rather than falling through to Number(value).
+                  if (value === null || value === "none") {
+                    updateField("seatNumber", null)
+                    return
+                  }
+                  updateField("seatNumber", Number(value) as SeatNumber)
+                }}
               >
                 <SelectTrigger id="traveller-seat">
                   <SelectValue />
@@ -292,9 +335,10 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-passport">Passport Status</Label>
               <Select
                 value={form.passportStatus}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("passportStatus", value as DocumentStatus)
-                }
+                }}
               >
                 <SelectTrigger id="traveller-passport">
                   <SelectValue />
@@ -313,9 +357,10 @@ export function AddTravellerDialog({
               <Label htmlFor="traveller-voter-id">Voter ID Status</Label>
               <Select
                 value={form.voterIdStatus}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("voterIdStatus", value as DocumentStatus)
-                }
+                }}
               >
                 <SelectTrigger id="traveller-voter-id">
                   <SelectValue />
@@ -348,7 +393,9 @@ export function AddTravellerDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit">{isEditMode ? "Save Changes" : "Add Traveller"}</Button>
+            <Button type="submit">
+              {isEditMode ? "Save Changes" : "Add Traveller"}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -4,7 +4,7 @@
  * TimelineCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single timeline entry — used by
- * TimelineTable's Card View.
+ * TimelineTable's Card View. Edit/Delete footer is print:hidden.
  */
 
 import { format, isValid, parseISO } from "date-fns"
@@ -22,7 +22,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Calendar, Route } from "lucide-react"
 
-import type { TimelineEntry, TimelineStatus } from "./TimelineTable"
+import type { TimelineEntry, TimelineStatus } from "@/types/timeline"
 
 interface TimelineCardProps {
   entry: TimelineEntry
@@ -30,9 +30,6 @@ interface TimelineCardProps {
   onDelete: (entry: TimelineEntry) => void
 }
 
-/** Kept local rather than imported — see the note in TimelineTable's
- *  TableView about avoiding a value-level circular import for small
- *  helpers. */
 function statusBadgeVariant(
   status: TimelineStatus
 ): "default" | "secondary" | "outline" {
@@ -87,7 +84,7 @@ export function TimelineCard({ entry, onEdit, onDelete }: TimelineCardProps) {
         )}
       </CardContent>
 
-      <CardFooter className="gap-2">
+      <CardFooter className="gap-2 print:hidden">
         <Button
           type="button"
           variant="outline"

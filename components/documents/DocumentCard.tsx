@@ -7,7 +7,9 @@
  * DocumentTable's Card View.
  *
  * Naming note: the entry is called `record` (not `document`) throughout,
- * to avoid shadowing the global `window.document` object.
+ * to avoid shadowing the global `window.document` object. Only the type
+ * import changed for the Firestore migration (now from @/types/document
+ * instead of sideways from ./DocumentTable).
  */
 
 import { format, isValid, parseISO } from "date-fns"
@@ -26,7 +28,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Calendar, User, FileText, AlertTriangle } from "lucide-react"
 
-import type { DocumentRecord, DocumentStatus } from "./DocumentTable"
+import type { DocumentRecord, DocumentStatus } from "@/types/document"
 
 interface DocumentCardProps {
   record: DocumentRecord

@@ -3,33 +3,23 @@
 /**
  * EmergencyTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Emergency Contacts module's container component — same architecture
- * as TravellerTable/VehicleTable/etc: owns the shared list state, search,
- * view-mode toggle, and the add/edit/delete flows. EmergencyCard and
- * AddEmergencyDialog are both presentational/controlled and take
- * everything they need as props.
+ * The Emergency Contacts module's container component — Firestore-backed.
  *
- * No backend: `contacts` is local React state only, starting empty. Not
- * wired to Context yet — per current instructions, this module stays on
- * plain local state until the Dashboard integration work resumes.
- *
- * Phone numbers render as real `tel:` links here (not plain text, unlike
- * Hotels' contact phone field) — this is the one module where tap-to-call
- * is a genuinely justified feature given what it's for.
- *
- * Cards deliberately stay visually calm rather than red-accented across
- * the board — constant destructive styling on a reference list (most of
- * which is calm info like "Trip Lead: name, phone") would dilute the
- * signal value red carries elsewhere in this app (Vehicles' Maintenance,
- * Documents' Expired). The module's own icon and framing carry the
- * "emergency" context; individual contacts don't need to shout it too.
+ * Print added here specifically because this is the one page where a
+ * physical copy genuinely matters — if phones die or there's no signal,
+ * a printed contact sheet still works. Search, view toggle, and every
+ * row's Edit/Delete buttons are `print:hidden`; only the contact data
+ * itself prints.
  */
 
 import * as React from "react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { PrintButton } from "@/components/ui/print-button"
 import {
   Table,
   TableBody,
@@ -62,29 +52,14 @@ import {
 
 import { EmergencyCard } from "./EmergencyCard"
 import { AddEmergencyDialog } from "./AddEmergencyDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type EmergencyCategory =
-  | "Team"
-  | "Medical"
-  | "Police"
-  | "Insurance"
-  | "Embassy"
-  | "Vehicle Service"
-  | "Other"
-
-export interface EmergencyContact {
-  id: string
-  name: string
-  category: EmergencyCategory
-  phone: string
-  /** Which city/context this contact applies to — free text, optional. */
-  city: string
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addEmergencyContact,
+  deleteEmergencyContact,
+  subscribeToEmergencyContacts,
+  updateEmergencyContact,
+} from "@/services/emergency/emergency.service"
+import type { EmergencyContact, NewEmergencyContact } from "@/types/emergency"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -93,6 +68,20 @@ export interface EmergencyContact {
 type ViewMode = "table" | "card"
 
 type DialogState = { mode: "add" } | { mode: "edit"; contact: EmergencyContact } | null
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
+}
 
 /* -------------------------------------------------------------------------- */
 /*                                Empty state                                */
@@ -146,7 +135,7 @@ function TableView({ contacts, onEdit, onDelete }: TableViewProps) {
             <TableHead>Category</TableHead>
             <TableHead>Phone</TableHead>
             <TableHead>City</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right print:hidden">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -162,9 +151,9 @@ function TableView({ contacts, onEdit, onDelete }: TableViewProps) {
                 {contact.phone ? (
                   <a
                     href={`tel:${contact.phone}`}
-                    className="inline-flex items-center gap-1.5 text-primary underline-offset-4 hover:underline"
+                    className="inline-flex items-center gap-1.5 text-primary underline-offset-4 hover:underline print:text-black print:no-underline"
                   >
-                    <Phone className="h-3.5 w-3.5" aria-hidden="true" />
+                    <Phone className="h-3.5 w-3.5 print:hidden" aria-hidden="true" />
                     {contact.phone}
                   </a>
                 ) : (
@@ -172,7 +161,7 @@ function TableView({ contacts, onEdit, onDelete }: TableViewProps) {
                 )}
               </TableCell>
               <TableCell className="text-muted-foreground">{contact.city || "—"}</TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right print:hidden">
                 <div className="flex justify-end gap-1">
                   <Button
                     type="button"
@@ -209,10 +198,28 @@ function TableView({ contacts, onEdit, onDelete }: TableViewProps) {
 
 export function EmergencyTable() {
   const [contacts, setContacts] = React.useState<EmergencyContact[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<EmergencyContact | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToEmergencyContacts(
+      (data) => {
+        setContacts(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredContacts = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -237,20 +244,33 @@ export function EmergencyTable() {
     setDeleteTarget(contact)
   }
 
-  function handleDialogSubmit(contact: EmergencyContact) {
-    setContacts((prev) => {
-      const exists = prev.some((c) => c.id === contact.id)
-      return exists
-        ? prev.map((c) => (c.id === contact.id ? contact : c))
-        : [...prev, contact]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewEmergencyContact, id?: string) {
+    try {
+      if (id) {
+        await updateEmergencyContact(id, data)
+        toast.success("Contact updated")
+      } else {
+        await addEmergencyContact(data)
+        toast.success("Contact added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setContacts((prev) => prev.filter((c) => c.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteEmergencyContact(deleteTarget.id)
+      toast.success("Contact removed")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -263,8 +283,8 @@ export function EmergencyTable() {
         </p>
       </div>
 
-      {/* Toolbar: search, view toggle, add */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Toolbar: search, view toggle, print, add */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div className="relative w-full sm:max-w-xs">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -305,6 +325,8 @@ export function EmergencyTable() {
             </Button>
           </div>
 
+          <PrintButton />
+
           <Button type="button" size="sm" className="gap-1.5" onClick={handleAddClick}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             Add Contact
@@ -313,7 +335,9 @@ export function EmergencyTable() {
       </div>
 
       {/* Content */}
-      {contacts.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : contacts.length === 0 ? (
         <EmptyState
           icon={Siren}
           title="No emergency contacts yet"
@@ -357,7 +381,7 @@ export function EmergencyTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -369,12 +393,13 @@ export function EmergencyTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Remove
+              {isDeleting ? "Removing…" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

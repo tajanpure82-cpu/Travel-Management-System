@@ -4,7 +4,8 @@
  * TollCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single toll entry — used by TollTable's Card
- * View.
+ * View. Shows `vehicleName` (the real Vehicle reference's display name)
+ * and a single amount, replacing the old Car A / Car B split.
  */
 
 import { format, isValid, parseISO } from "date-fns"
@@ -22,7 +23,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Calendar, Car } from "lucide-react"
 
-import type { TollEntry } from "./TollTable"
+import type { TollEntry } from "@/types/toll"
 
 interface TollCardProps {
   entry: TollEntry
@@ -45,8 +46,6 @@ function formatInr(amount: number): string {
 }
 
 export function TollCard({ entry, onEdit, onDelete }: TollCardProps) {
-  const total = entry.carAAmount + entry.carBAmount
-
   return (
     <Card className="flex flex-col">
       <CardHeader>
@@ -56,7 +55,7 @@ export function TollCard({ entry, onEdit, onDelete }: TollCardProps) {
               {entry.section || "Untitled section"}
             </CardTitle>
             <CardDescription className="text-lg font-semibold text-foreground">
-              {formatInr(total)}
+              {formatInr(entry.amount)}
             </CardDescription>
           </div>
           <Badge variant={entry.method === "FASTag" ? "default" : "outline"} className="shrink-0">
@@ -73,9 +72,7 @@ export function TollCard({ entry, onEdit, onDelete }: TollCardProps) {
 
         <div className="flex items-center gap-2 text-muted-foreground">
           <Car className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>
-            Car A {formatInr(entry.carAAmount)} · Car B {formatInr(entry.carBAmount)}
-          </span>
+          <span>{entry.vehicleName || "Unassigned vehicle"}</span>
         </div>
 
         {entry.notes && (

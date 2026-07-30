@@ -3,13 +3,16 @@
 /**
  * AddEmergencyDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single emergency contact — same
- * pattern as AddTravellerDialog / AddVehicleDialog / etc: no
+ * Fully controlled Add/Edit dialog for a single emergency contact — no
  * <DialogTrigger> of its own, driven entirely by `open`/`contact` props
  * from EmergencyTable.
  *
- * Mode is inferred from `contact`: null/undefined = Add, an
- * EmergencyContact = Edit.
+ * Type-safety sweep: onValueChange now guards against Base UI's Select
+ * passing `null` before asserting to the category union type. See
+ * AddExpenseDialog.tsx for the full explanation.
+ *
+ * Validation is stricter than most modules: Name AND Phone are both
+ * required — unchanged.
  */
 
 import * as React from "react"
@@ -34,12 +37,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-import type { EmergencyContact, EmergencyCategory } from "./EmergencyTable"
+import type {
+  EmergencyCategory,
+  EmergencyContact,
+  NewEmergencyContact,
+} from "@/types/emergency"
 
-// Local copy of the option list — kept in this file (rather than imported
-// as a value from EmergencyTable) purely to avoid a value-level circular
-// import between the two sibling components. Only *types* are shared
-// across files here.
 const EMERGENCY_CATEGORIES: EmergencyCategory[] = [
   "Team",
   "Medical",
@@ -55,7 +58,8 @@ interface AddEmergencyDialogProps {
   onOpenChange: (open: boolean) => void
   /** Contact being edited, or null/undefined to add a new one. */
   contact?: EmergencyContact | null
-  onSubmit: (contact: EmergencyContact) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewEmergencyContact, id?: string) => void
 }
 
 interface FormState {
@@ -120,14 +124,15 @@ export function AddEmergencyDialog({
       return
     }
 
-    onSubmit({
-      id: contact?.id ?? crypto.randomUUID(),
+    const data: NewEmergencyContact = {
       name: form.name.trim(),
       category: form.category,
       phone: form.phone.trim(),
       city: form.city.trim(),
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, contact?.id)
   }
 
   return (
@@ -159,9 +164,10 @@ export function AddEmergencyDialog({
               <Label htmlFor="emergency-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
+                  if (value === null) return
                   updateField("category", value as EmergencyCategory)
-                }
+                }}
               >
                 <SelectTrigger id="emergency-category">
                   <SelectValue />

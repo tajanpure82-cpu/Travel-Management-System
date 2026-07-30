@@ -4,9 +4,7 @@
  * EmergencyCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single emergency contact — used by
- * EmergencyTable's Card View. Deliberately calm styling (see the note in
- * EmergencyTable) — the phone number is the one element that gets a
- * clear, tappable treatment.
+ * EmergencyTable's Card View. Edit/Delete footer is print:hidden.
  */
 
 import { Button } from "@/components/ui/button"
@@ -22,7 +20,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Phone, MapPin } from "lucide-react"
 
-import type { EmergencyContact } from "./EmergencyTable"
+import type { EmergencyContact } from "@/types/emergency"
 
 interface EmergencyCardProps {
   contact: EmergencyContact
@@ -48,9 +46,9 @@ export function EmergencyCard({ contact, onEdit, onDelete }: EmergencyCardProps)
         {contact.phone ? (
           <a
             href={`tel:${contact.phone}`}
-            className="flex items-center gap-2 text-primary underline-offset-4 hover:underline"
+            className="flex items-center gap-2 text-primary underline-offset-4 hover:underline print:text-black print:no-underline"
           >
-            <Phone className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <Phone className="h-4 w-4 shrink-0 print:hidden" aria-hidden="true" />
             {contact.phone}
           </a>
         ) : (
@@ -77,7 +75,7 @@ export function EmergencyCard({ contact, onEdit, onDelete }: EmergencyCardProps)
         )}
       </CardContent>
 
-      <CardFooter className="gap-2">
+      <CardFooter className="gap-2 print:hidden">
         <Button
           type="button"
           variant="outline"

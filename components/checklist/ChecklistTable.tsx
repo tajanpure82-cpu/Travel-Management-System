@@ -3,27 +3,26 @@
 /**
  * ChecklistTable
  * ─────────────────────────────────────────────────────────────────────────
- * The Checklist module's container component — same architecture as
- * TravellerTable/VehicleTable/etc: owns the shared list state, search, a
- * "Pending only" filter, view-mode toggle, and the add/edit/delete flows.
- * ChecklistCard and AddChecklistDialog are both presentational/controlled
- * and take everything they need as props.
- *
- * No backend: `items` is local React state only, starting empty. Not
- * wired to Context yet — per current instructions, this module stays on
- * plain local state until the Dashboard integration work resumes.
+ * The Checklist module's container component — Firestore-backed,
+ * following the pattern proven in TravellerTable/VehicleTable/etc.
  *
  * "Completed" can be toggled two ways: a quick click on the check icon
- * directly in Table/Card view (no dialog needed for the common case), or
- * via the Checkbox inside the Edit dialog for full correction alongside
- * other fields.
+ * directly in Table/Card view, or via the Checkbox inside the Edit
+ * dialog. The quick-toggle calls Firestore directly and only shows a
+ * toast on failure — the checkmark flipping is already the confirmation,
+ * so a success toast on every single check-off would be noise rather
+ * than feedback. The dialog's full save still gets a toast either way,
+ * matching every other module (the dialog closing needs that
+ * confirmation since there's no other visual cue).
  */
 
 import * as React from "react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -57,29 +56,14 @@ import {
 
 import { ChecklistCard } from "./ChecklistCard"
 import { AddChecklistDialog } from "./AddChecklistDialog"
-
-/* -------------------------------------------------------------------------- */
-/*                          Shared types (exported)                          */
-/* -------------------------------------------------------------------------- */
-
-export type ChecklistCategory =
-  | "Pre-Trip"
-  | "Documents"
-  | "Vehicle"
-  | "Packing"
-  | "Daily"
-  | "Other"
-
-export type ChecklistPriority = "Low" | "Medium" | "High"
-
-export interface ChecklistItem {
-  id: string
-  title: string
-  category: ChecklistCategory
-  priority: ChecklistPriority
-  completed: boolean
-  notes: string
-}
+import { getErrorMessage } from "@/lib/firebase/errors"
+import {
+  addChecklistItem,
+  deleteChecklistItem,
+  subscribeToChecklistItems,
+  updateChecklistItem,
+} from "@/services/checklist/checklist.service"
+import type { ChecklistItem, ChecklistPriority, NewChecklistItem } from "@/types/checklist"
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -98,6 +82,20 @@ function priorityBadgeVariant(
   if (priority === "High") return "destructive"
   if (priority === "Medium") return "secondary"
   return "default" // Low
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Loading state                               */
+/* -------------------------------------------------------------------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Skeleton key={index} className="h-14 w-full rounded-md" />
+      ))}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -224,11 +222,29 @@ function TableView({ items, onToggleComplete, onEdit, onDelete }: TableViewProps
 
 export function ChecklistTable() {
   const [items, setItems] = React.useState<ChecklistItem[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [viewMode, setViewMode] = React.useState<ViewMode>("table")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [pendingOnly, setPendingOnly] = React.useState(false)
   const [dialogState, setDialogState] = React.useState<DialogState>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<ChecklistItem | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Real-time Firestore subscription — fires immediately with the current
+  // data, then again on every add/edit/delete from any browser/device.
+  React.useEffect(() => {
+    const unsubscribe = subscribeToChecklistItems(
+      (data) => {
+        setItems(data)
+        setLoading(false)
+      },
+      (error) => {
+        toast.error(getErrorMessage(error))
+        setLoading(false)
+      }
+    )
+    return unsubscribe
+  }, [])
 
   const filteredItems = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -259,24 +275,43 @@ export function ChecklistTable() {
     setDeleteTarget(item)
   }
 
-  function handleToggleComplete(item: ChecklistItem) {
-    setItems((prev) =>
-      prev.map((i) => (i.id === item.id ? { ...i, completed: !i.completed } : i))
-    )
+  // Quick toggle — bypasses the dialog entirely. Only errors get a toast;
+  // the checkmark itself is the success confirmation.
+  async function handleToggleComplete(item: ChecklistItem) {
+    try {
+      await updateChecklistItem(item.id, { completed: !item.completed })
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleDialogSubmit(item: ChecklistItem) {
-    setItems((prev) => {
-      const exists = prev.some((i) => i.id === item.id)
-      return exists ? prev.map((i) => (i.id === item.id ? item : i)) : [...prev, item]
-    })
-    setDialogState(null)
+  async function handleDialogSubmit(data: NewChecklistItem, id?: string) {
+    try {
+      if (id) {
+        await updateChecklistItem(id, data)
+        toast.success("Item updated")
+      } else {
+        await addChecklistItem(data)
+        toast.success("Item added")
+      }
+      setDialogState(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    }
   }
 
-  function handleConfirmDelete() {
+  async function handleConfirmDelete() {
     if (!deleteTarget) return
-    setItems((prev) => prev.filter((i) => i.id !== deleteTarget.id))
-    setDeleteTarget(null)
+    setIsDeleting(true)
+    try {
+      await deleteChecklistItem(deleteTarget.id)
+      toast.success("Item deleted")
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -351,7 +386,9 @@ export function ChecklistTable() {
       </div>
 
       {/* Content */}
-      {items.length === 0 ? (
+      {loading ? (
+        <LoadingState />
+      ) : items.length === 0 ? (
         <EmptyState
           icon={ClipboardList}
           title="No checklist items yet"
@@ -401,7 +438,7 @@ export function ChecklistTable() {
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleteTarget(null)
+          if (!isOpen && !isDeleting) setDeleteTarget(null)
         }}
       >
         <AlertDialogContent>
@@ -414,12 +451,13 @@ export function ChecklistTable() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
+              disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

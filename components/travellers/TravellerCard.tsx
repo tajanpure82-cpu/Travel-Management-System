@@ -4,9 +4,7 @@
  * TravellerCard
  * ─────────────────────────────────────────────────────────────────────────
  * Presentational card for a single traveller — used by TravellerTable's
- * Card View. Shows every field; the compact Table View only surfaces the
- * most operationally relevant columns, so this card is the full-detail
- * counterpart.
+ * Card View. Edit/Delete footer is print:hidden.
  */
 
 import { cn } from "@/lib/utils"
@@ -23,7 +21,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Pencil, Trash2, Phone, Car, Droplet, AlertTriangle } from "lucide-react"
 
-import type { Traveller, DocumentStatus } from "./TravellerTable"
+import type { Traveller, DocumentStatus } from "@/types/traveller"
 
 interface TravellerCardProps {
   traveller: Traveller
@@ -31,9 +29,6 @@ interface TravellerCardProps {
   onDelete: (traveller: Traveller) => void
 }
 
-/** Kept local rather than imported — see the note in TravellerTable's
- *  TableView about avoiding a value-level circular import for a 3-line
- *  helper. */
 function documentBadgeVariant(
   status: DocumentStatus
 ): "default" | "destructive" | "secondary" {
@@ -83,7 +78,7 @@ export function TravellerCard({ traveller, onEdit, onDelete }: TravellerCardProp
         <div className="flex items-center gap-2 text-muted-foreground">
           <Car className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>
-            {traveller.assignedVehicle}
+            {traveller.assignedVehicleName ?? "Unassigned"}
             {traveller.seatNumber ? ` · Seat ${traveller.seatNumber}` : ""}
           </span>
         </div>
@@ -113,7 +108,7 @@ export function TravellerCard({ traveller, onEdit, onDelete }: TravellerCardProp
         )}
       </CardContent>
 
-      <CardFooter className="gap-2">
+      <CardFooter className="gap-2 print:hidden">
         <Button
           type="button"
           variant="outline"

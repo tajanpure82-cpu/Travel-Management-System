@@ -3,12 +3,19 @@
 /**
  * AddDocumentDialog
  * ─────────────────────────────────────────────────────────────────────────
- * Fully controlled Add/Edit dialog for a single document record — same
- * pattern as AddTravellerDialog / AddVehicleDialog / AddExpenseDialog /
- * AddFuelDialog / AddHotelDialog: no <DialogTrigger> of its own, driven
- * entirely by `open`/`document` props from DocumentTable.
+ * Fully controlled Add/Edit dialog for a single document record — no
+ * <DialogTrigger> of its own, driven entirely by `open`/`document` props
+ * from DocumentTable.
  *
- * Mode is inferred from `document`: null/undefined = Add, a DocumentRecord = Edit.
+ * The prop is named `document` deliberately (DocumentTable's own internal
+ * variable is `record`, to avoid shadowing `window.document`), destructured
+ * as `document: documentRecord` here so this file doesn't shadow the
+ * global either.
+ *
+ * Type-safety sweep: onValueChange handlers now guard against Base UI's
+ * Select passing `null` before asserting to each field's literal union
+ * type (category, status). See AddExpenseDialog.tsx for the full
+ * explanation.
  */
 
 import * as React from "react"
@@ -34,15 +41,12 @@ import {
 } from "@/components/ui/dialog"
 
 import type {
-  DocumentRecord,
   DocumentCategory,
+  DocumentRecord,
   DocumentStatus,
-} from "./DocumentTable"
+  NewDocumentRecord,
+} from "@/types/document"
 
-// Local copies of the option lists — kept in this file (rather than
-// imported as values from DocumentTable) purely to avoid a value-level
-// circular import between the two sibling components. Only *types* are
-// shared across files here.
 const DOCUMENT_CATEGORIES: DocumentCategory[] = [
   "Vehicle RC",
   "Vehicle Insurance",
@@ -55,19 +59,15 @@ const DOCUMENT_CATEGORIES: DocumentCategory[] = [
   "Other",
 ]
 
-const DOCUMENT_STATUSES: DocumentStatus[] = [
-  "Valid",
-  "Expiring Soon",
-  "Expired",
-  "Missing",
-]
+const DOCUMENT_STATUSES: DocumentStatus[] = ["Valid", "Expiring Soon", "Expired", "Missing"]
 
 interface AddDocumentDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Document being edited, or null/undefined to add a new one. */
   document?: DocumentRecord | null
-  onSubmit: (document: DocumentRecord) => void
+  /** `id` is present only in edit mode. */
+  onSubmit: (data: NewDocumentRecord, id?: string) => void
 }
 
 interface FormState {
@@ -134,8 +134,7 @@ export function AddDocumentDialog({
       return
     }
 
-    onSubmit({
-      id: documentRecord?.id ?? crypto.randomUUID(),
+    const data: NewDocumentRecord = {
       name: form.name.trim(),
       category: form.category,
       ownerOrVehicle: form.ownerOrVehicle.trim(),
@@ -143,7 +142,9 @@ export function AddDocumentDialog({
       status: form.status,
       fileReference: form.fileReference.trim(),
       notes: form.notes.trim(),
-    })
+    }
+
+    onSubmit(data, documentRecord?.id)
   }
 
   return (
@@ -175,7 +176,10 @@ export function AddDocumentDialog({
               <Label htmlFor="document-category">Category</Label>
               <Select
                 value={form.category}
-                onValueChange={(value) => updateField("category", value as DocumentCategory)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("category", value as DocumentCategory)
+                }}
               >
                 <SelectTrigger id="document-category">
                   <SelectValue />
@@ -214,7 +218,10 @@ export function AddDocumentDialog({
               <Label htmlFor="document-status">Status</Label>
               <Select
                 value={form.status}
-                onValueChange={(value) => updateField("status", value as DocumentStatus)}
+                onValueChange={(value) => {
+                  if (value === null) return
+                  updateField("status", value as DocumentStatus)
+                }}
               >
                 <SelectTrigger id="document-status">
                   <SelectValue />

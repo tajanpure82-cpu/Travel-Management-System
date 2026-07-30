@@ -4,8 +4,17 @@
  * TimelineTable
  * ─────────────────────────────────────────────────────────────────────────
  * The Trip Timeline module's container component — Firestore-backed.
- * Print added: a printed itinerary is a reasonable backup to have on
- * paper. Search, filter, view toggle, and Edit/Delete are print:hidden.
+ * Print added earlier: a printed itinerary is a reasonable backup to
+ * have on paper. Search, filter, view toggle, and Edit/Delete are
+ * print:hidden.
+ *
+ * Route Map (new): plots any leg that has a location set (see
+ * AddTimelineDialog.tsx and lib/routeCities.ts) using free
+ * OpenStreetMap tiles — no Google Maps, no API key, no billing account.
+ * Imported via next/dynamic with ssr:false, since Leaflet needs the
+ * browser's `window`/DOM, which doesn't exist during Next.js's
+ * server-render pass. print:hidden — an interactive map has no place on
+ * a printed itinerary; the Table/Card views below it are what print.
  *
  * Entries are always displayed sorted by day number ascending (entries
  * with no day set sort last) — computed client-side via `sortByDay`,
@@ -14,6 +23,7 @@
  */
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import { format, isValid, parseISO } from "date-fns"
 import { toast } from "sonner"
 
@@ -61,6 +71,21 @@ import {
   updateTimelineEntry,
 } from "@/services/timeline/timeline.service"
 import type { NewTimelineEntry, TimelineEntry, TimelineStatus } from "@/types/timeline"
+
+// ssr:false is required here, not optional — Leaflet references
+// `window`/the DOM at module load time, which doesn't exist during
+// Next.js's server-side render pass and would crash the build otherwise.
+const RouteMap = dynamic(
+  () => import("./RouteMap").then((mod) => mod.RouteMap),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-80 items-center justify-center rounded-md border border-border text-sm text-muted-foreground">
+        Loading map…
+      </div>
+    ),
+  }
+)
 
 /* -------------------------------------------------------------------------- */
 /*                               Local helpers                                */
@@ -310,6 +335,14 @@ export function TimelineTable() {
           {entries.length} leg{entries.length === 1 ? "" : "s"} · {completedCount} completed
         </p>
       </div>
+
+      {/* Route Map — plots any leg with a location set. Hidden entirely
+          from print; the tables/cards below are what print. */}
+      {!loading && (
+        <div className="print:hidden">
+          <RouteMap entries={entries} />
+        </div>
+      )}
 
       {/* Toolbar: search, hide-completed filter, view toggle, print, add */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">

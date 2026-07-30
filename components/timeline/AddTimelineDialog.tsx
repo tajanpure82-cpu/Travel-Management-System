@@ -7,9 +7,12 @@
  * <DialogTrigger> of its own, driven entirely by `open`/`entry` props
  * from TimelineTable.
  *
- * Type-safety sweep: onValueChange now guards against Base UI's Select
- * passing `null` before asserting to the status union type. See
- * AddExpenseDialog.tsx for the full explanation.
+ * Location (new): a "Quick-fill from known city" dropdown, listing this
+ * trip's already-planned route cities (see lib/routeCities.ts) — picking
+ * one auto-fills latitude/longitude. The two number fields underneath
+ * stay directly editable too, for a location not on that list, or to
+ * clear one that was set. Entirely optional — a leg with no location set
+ * just won't appear on the Route Map, nothing else is affected.
  *
  * The negative-number guard on day/distanceKm (added during the
  * pre-backend audit) is preserved unchanged here.
@@ -37,6 +40,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
+import { ROUTE_CITIES } from "@/lib/routeCities"
 import type { NewTimelineEntry, TimelineEntry, TimelineStatus } from "@/types/timeline"
 
 const TIMELINE_STATUSES: TimelineStatus[] = ["Upcoming", "In Progress", "Completed"]
@@ -57,6 +61,8 @@ interface FormState {
   distanceKm: string
   status: TimelineStatus
   notes: string
+  latitude: string
+  longitude: string
 }
 
 function emptyForm(): FormState {
@@ -67,6 +73,8 @@ function emptyForm(): FormState {
     distanceKm: "",
     status: "Upcoming",
     notes: "",
+    latitude: "",
+    longitude: "",
   }
 }
 
@@ -78,6 +86,8 @@ function entryToForm(entry: TimelineEntry): FormState {
     distanceKm: entry.distanceKm !== null ? String(entry.distanceKm) : "",
     status: entry.status,
     notes: entry.notes,
+    latitude: entry.latitude !== null ? String(entry.latitude) : "",
+    longitude: entry.longitude !== null ? String(entry.longitude) : "",
   }
 }
 
@@ -90,6 +100,18 @@ function parseOptionalNumber(value: string): number | null {
   const parsed = Number(trimmed)
   if (Number.isNaN(parsed) || parsed < 0) return null
   return parsed
+}
+
+/** Latitude/longitude are real coordinates, not "always positive"
+ *  quantities like day/distance — negative longitude is valid anywhere
+ *  west of Greenwich, so this parses without the same floor-at-zero
+ *  guard used elsewhere. Only genuinely invalid (non-numeric) input
+ *  becomes null. */
+function parseOptionalCoordinate(value: string): number | null {
+  const trimmed = value.trim()
+  if (trimmed === "") return null
+  const parsed = Number(trimmed)
+  return Number.isNaN(parsed) ? null : parsed
 }
 
 export function AddTimelineDialog({
@@ -114,6 +136,16 @@ export function AddTimelineDialog({
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
+  function handleQuickFillCity(cityName: string) {
+    const city = ROUTE_CITIES.find((c) => c.name === cityName)
+    if (!city) return
+    setForm((prev) => ({
+      ...prev,
+      latitude: String(city.latitude),
+      longitude: String(city.longitude),
+    }))
+  }
+
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -129,6 +161,8 @@ export function AddTimelineDialog({
       distanceKm: parseOptionalNumber(form.distanceKm),
       status: form.status,
       notes: form.notes.trim(),
+      latitude: parseOptionalCoordinate(form.latitude),
+      longitude: parseOptionalCoordinate(form.longitude),
     }
 
     onSubmit(data, entry?.id)
@@ -215,6 +249,55 @@ export function AddTimelineDialog({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          </div>
+
+          <div className="space-y-2 rounded-md border border-dashed border-border p-3">
+            <Label htmlFor="timeline-quickfill">
+              Location (optional — for the Route Map)
+            </Label>
+            <Select value="" onValueChange={(value) => value && handleQuickFillCity(value)}>
+              <SelectTrigger id="timeline-quickfill">
+                <SelectValue placeholder="Quick-fill from a known route city…" />
+              </SelectTrigger>
+              <SelectContent>
+                {ROUTE_CITIES.map((city) => (
+                  <SelectItem key={city.name} value={city.name}>
+                    {city.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <div className="space-y-1">
+                <Label htmlFor="timeline-latitude" className="text-xs text-muted-foreground">
+                  Latitude
+                </Label>
+                <Input
+                  id="timeline-latitude"
+                  type="number"
+                  step="any"
+                  inputMode="decimal"
+                  value={form.latitude}
+                  onChange={(e) => updateField("latitude", e.target.value)}
+                  placeholder="e.g. 19.9975"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="timeline-longitude" className="text-xs text-muted-foreground">
+                  Longitude
+                </Label>
+                <Input
+                  id="timeline-longitude"
+                  type="number"
+                  step="any"
+                  inputMode="decimal"
+                  value={form.longitude}
+                  onChange={(e) => updateField("longitude", e.target.value)}
+                  placeholder="e.g. 73.7898"
+                />
+              </div>
             </div>
           </div>
 
